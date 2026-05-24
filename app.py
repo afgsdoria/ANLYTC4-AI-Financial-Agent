@@ -32,6 +32,7 @@ from modules.goal_engine import extract_goal_from_text
 from modules.alerts import generate_spending_alerts
 from modules.recommendations import generate_recommendations
 from modules.reports import generate_financial_report
+from modules.onboarding import get_getting_started_content
 
 create_tables()
 
@@ -54,7 +55,7 @@ html, body, [class*="css"] {
 
 /* ── App background ── */
 .stApp {
-    background-color: #F7F9FC;
+    background-color: #0F172A;
 }
 
 /* ── Sidebar ── */
@@ -71,8 +72,8 @@ html, body, [class*="css"] {
     color: #CBD5E0 !important;
 }
 [data-testid="stSidebar"] .stTextInput input {
-    background: rgba(255,255,255,0.1);
-    border: 1px solid rgba(255,255,255,0.2);
+    background: #1A1A1A;
+    border: 1px solid #334155;
     color: white !important;
     border-radius: 8px;
 }
@@ -80,19 +81,19 @@ html, body, [class*="css"] {
     color: rgba(255,255,255,0.4) !important;
 }
 [data-testid="stSidebar"] .stSelectbox > div > div {
-    background: rgba(255,255,255,0.1) !important;
-    border: 1px solid rgba(255,255,255,0.2) !important;
+    background: #1A1A1A !important;
+    border: 1px solid #334155 !important;
     color: white !important;
     border-radius: 8px;
 }
 [data-testid="stSidebar"] .stNumberInput input {
-    background: rgba(255,255,255,0.1) !important;
-    border: 1px solid rgba(255,255,255,0.2) !important;
+    background: #1A1A1A !important;
+    border: 1px solid #334155 !important;
     color: white !important;
     border-radius: 8px;
 }
 [data-testid="stSidebar"] .stDateInput input {
-    background: rgba(255,255,255,0.1) !important;
+    background: #1A1A1A !important;
     color: white !important;
     border-radius: 8px;
 }
@@ -117,7 +118,7 @@ html, body, [class*="css"] {
 /* ── Tabs ── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
-    background: #E8EEF7;
+    background: #1E293B;
     padding: 6px;
     border-radius: 12px;
 }
@@ -125,34 +126,34 @@ html, body, [class*="css"] {
     border-radius: 8px !important;
     padding: 8px 16px !important;
     font-weight: 500 !important;
-    color: #4A5568 !important;
+    color: #94A3B8 !important;
     background: transparent !important;
     border: none !important;
 }
 .stTabs [aria-selected="true"] {
-    background: white !important;
-    color: #1E40AF !important;
+    background: #334155 !important;
+    color: #60A5FA !important;
     font-weight: 600 !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.12) !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important;
 }
 
 /* ── Metrics ── */
 [data-testid="metric-container"] {
-    background: white;
+    background: #1E293B;
     border-radius: 12px;
     padding: 16px 20px;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.07);
-    border: 1px solid #E2E8F0;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.3);
+    border: 1px solid #334155;
 }
 [data-testid="metric-container"] label {
-    color: #64748B !important;
+    color: #94A3B8 !important;
     font-size: 0.78rem !important;
     font-weight: 600 !important;
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 [data-testid="stMetricValue"] {
-    color: #1E293B !important;
+    color: #E8EEF7 !important;
     font-weight: 700 !important;
 }
 
@@ -162,7 +163,7 @@ html, body, [class*="css"] {
     font-weight: 600 !important;
     border: 1.5px solid #3B82F6 !important;
     color: #3B82F6 !important;
-    background: white !important;
+    background: transparent !important;
     transition: all 0.15s ease;
 }
 .stButton > button:hover {
@@ -182,15 +183,15 @@ html, body, [class*="css"] {
 
 /* ── Profile summary card ── */
 .profile-card {
-    background: white;
+    background: #1E293B;
     border-radius: 14px;
     padding: 20px 24px;
-    border: 1px solid #E2E8F0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    border: 1px solid #334155;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     margin-top: 1rem;
 }
 .profile-card h4 {
-    color: #1E293B;
+    color: #E8EEF7;
     margin: 0 0 14px 0;
     font-size: 1rem;
     font-weight: 700;
@@ -200,18 +201,18 @@ html, body, [class*="css"] {
     justify-content: space-between;
     align-items: center;
     padding: 9px 0;
-    border-bottom: 1px solid #F1F5F9;
+    border-bottom: 1px solid #334155;
 }
 .profile-row:last-child {
     border-bottom: none;
 }
 .profile-label {
-    color: #64748B;
+    color: #94A3B8;
     font-size: 0.85rem;
     font-weight: 500;
 }
 .profile-value {
-    color: #1E293B;
+    color: #E8EEF7;
     font-size: 0.9rem;
     font-weight: 600;
 }
@@ -234,7 +235,7 @@ html, body, [class*="css"] {
 .section-header {
     font-size: 1.05rem;
     font-weight: 700;
-    color: #1E293B;
+    color: #E8EEF7;
     padding-left: 10px;
     border-left: 4px solid #3B82F6;
     margin: 18px 0 10px 0;
@@ -244,21 +245,21 @@ html, body, [class*="css"] {
 .exp-row {
     display: flex;
     align-items: center;
-    background: white;
+    background: #1E293B;
     border-radius: 8px;
     padding: 10px 14px;
     margin-bottom: 6px;
-    border: 1px solid #E2E8F0;
+    border: 1px solid #334155;
     font-size: 0.88rem;
 }
 .exp-date  { color: #94A3B8; width: 110px; }
-.exp-cat   { color: #334155; font-weight: 600; flex: 1; }
-.exp-amt   { color: #1E40AF; font-weight: 700; width: 110px; text-align: right; }
+.exp-cat   { color: #E8EEF7; font-weight: 600; flex: 1; }
+.exp-amt   { color: #60A5FA; font-weight: 700; width: 110px; text-align: right; }
 
 /* ── Chat ── */
 [data-testid="stChatMessage"] {
     border-radius: 12px !important;
-    border: 1px solid #E2E8F0;
+    border: 1px solid #334155;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -278,7 +279,7 @@ for k, v in {
     "username": "", "user_type": "Student",
     "monthly_income": 0.0, "savings_goal": 0.0,
     "current_savings": 0.0, "logged_in": False,
-    "chat_messages": [],
+    "chat_messages": [], "show_getting_started_modal": True,
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -382,16 +383,32 @@ with st.sidebar:
         )
 
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # MAIN TABS
 # ═══════════════════════════════════════════════════════════════════════════════
 uname = st.session_state.username
 
-(tab_dashboard, tab_profile, tab_goals, tab_expenses,
+# ── Getting Started Modal ──
+if st.session_state.logged_in and st.session_state.show_getting_started_modal:
+    st.warning("👋 **Welcome!** Check out the **🎓 Getting Started** tab to learn about all features.")
+    col_modal_1, col_modal_2 = st.columns([3, 1])
+    with col_modal_2:
+        if st.button("✕ Dismiss", use_container_width=True):
+            st.session_state.show_getting_started_modal = False
+            st.rerun()
+    st.markdown("---")
+
+(tab_getting_started, tab_dashboard, tab_profile, tab_goals, tab_expenses,
  tab_forecast, tab_chat, tab_file, tab_report) = st.tabs([
-    "📊 Dashboard", "👤 Profile", "🎯 Goals", "💸 Expenses",
+    "🎓 Getting Started", "📊 Dashboard", "👤 Profile", "🎯 Goals", "💸 Expenses",
     "🔮 Forecast",  "💬 AI Chat", "📁 File Analysis", "📄 Report",
 ])
+
+
+# ─── TAB 0 · GETTING STARTED ──────────────────────────────────────────────────
+with tab_getting_started:
+    st.markdown(get_getting_started_content())
 
 
 # ─── TAB 1 · DASHBOARD ────────────────────────────────────────────────────────
@@ -454,7 +471,7 @@ with tab_dashboard:
             },
         ))
         fig_gauge.update_layout(
-            height=220, paper_bgcolor="rgba(0,0,0,0)",
+            height=220, paper_bgcolor="rgba(15,23,42,0.9)",
             plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(t=20, b=10, l=20, r=20),
         )
@@ -495,7 +512,7 @@ with tab_dashboard:
             fig_pie.update_traces(textfont_size=12, pull=[0.03]*len(df_exp))
             fig_pie.update_layout(
                 margin=dict(t=30, b=10, l=10, r=10), height=300,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(15,23,42,0.9)", plot_bgcolor="rgba(0,0,0,0)",
             )
             st.plotly_chart(fig_pie, use_container_width=True)
         with col_bar:
@@ -508,9 +525,9 @@ with tab_dashboard:
             fig_bar.update_layout(
                 margin=dict(t=20, b=10, l=10, r=10), height=300,
                 coloraxis_showscale=False,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                yaxis=dict(gridcolor="#F1F5F9"),
-                xaxis=dict(gridcolor="#F1F5F9"),
+                paper_bgcolor="rgba(15,23,42,0.9)", plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="#334155"),
+                xaxis=dict(gridcolor="#334155"),
             )
             st.plotly_chart(fig_bar, use_container_width=True)
     else:
@@ -716,9 +733,9 @@ with tab_expenses:
             fig_trend.update_traces(fill="tozeroy", fillcolor="rgba(59,130,246,0.12)")
             fig_trend.update_layout(
                 height=260, margin=dict(t=20, b=20, l=20, r=20),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(gridcolor="#F1F5F9", showline=False),
-                yaxis=dict(gridcolor="#F1F5F9"),
+                paper_bgcolor="rgba(15,23,42,0.9)", plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(gridcolor="#334155", showline=False),
+                yaxis=dict(gridcolor="#334155"),
             )
             st.plotly_chart(fig_trend, use_container_width=True)
     else:
@@ -760,9 +777,9 @@ with tab_forecast:
         )
     fig_fc.update_layout(
         height=340, margin=dict(t=30, b=20, l=20, r=20),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(gridcolor="#F1F5F9"),
-        yaxis=dict(gridcolor="#F1F5F9"),
+        paper_bgcolor="rgba(15,23,42,0.9)", plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(gridcolor="#334155"),
+        yaxis=dict(gridcolor="#334155"),
     )
     st.plotly_chart(fig_fc, use_container_width=True)
 

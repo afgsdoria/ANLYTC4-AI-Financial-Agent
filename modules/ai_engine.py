@@ -1,23 +1,57 @@
+"""
+ai_engine.py
+All OpenAI / GPT calls for the Financial AI Agent.
+"""
+
+import os
+from datetime import datetime
+
 from openai import OpenAI
 from dotenv import load_dotenv
-from datetime import datetime
-import os
-
-# =========================
-# ENVIRONMENT
-# =========================
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv(
-        "OPENAI_API_KEY"
-    )
-)
+_client = None
 
-# =========================
-# FINANCIAL ADVICE AI
-# =========================
+
+def _get_client():
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY not found. "
+                "Add it to your .env file."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
+
+
+def _today():
+    return datetime.today().strftime("%Y-%m-%d")
+
+
+def _chat(system: str, user: str, temperature: float = 0.7) -> str:
+    """Helper: single-turn chat completion."""
+    try:
+        client = _get_client()
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+            temperature=temperature,
+            max_tokens=1200,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"⚠️ AI Error: {str(e)}"
+
+
+# ============================================================
+# 1. FINANCIAL ADVICE
+# ============================================================
 
 def generate_financial_advice(
     username,
@@ -27,331 +61,146 @@ def generate_financial_advice(
     current_savings,
     total_spending,
     expenses,
-    active_goal=None
+    active_goal=None,
 ):
+    expense_lines = "\n".join(
+        f"  • {cat}: ₱{amt:,.2f} ({date})"
+        for cat, amt, date in (expenses or [])
+    ) or "  No expenses recorded."
 
-    today = datetime.today().strftime(
-        "%Y-%m-%d"
-    )
-
-    expense_text = ""
-
-    if expenses:
-
-        for expense in expenses:
-
-            category, amount, date = (
-                expense
-            )
-
-            expense_text += (
-                f"- {category}: "
-                f"₱{amount:,.2f} "
-                f"({date})\n"
-            )
-
-    else:
-
-        expense_text = (
-            "No expenses recorded."
-        )
-
-    # =========================
-    # ACTIVE GOAL
-    # =========================
-
-    goal_text = (
-        "No active financial goal."
-    )
-
+    goal_section = "No active financial goal."
     if active_goal:
-
-        (
-            goal_id,
-            goal_name,
-            target_amount,
-            deadline
-        ) = active_goal
-
-        goal_text = f"""
-        Goal Name: {goal_name}
-        Target Amount:
-        ₱{target_amount:,.2f}
-
-        Deadline:
-        {deadline}
-        """
-
-    prompt = f"""
-You are Financial AI Agent.
-
-TODAY'S DATE:
-{today}
-
-IMPORTANT RULES:
-- Only use CURRENT financial data
-- Never assume old goals
-- Never reference past years
-unless user explicitly says so
-- Speak based on PRESENT finances
-- Use latest expenses only
-- Be practical and realistic
-- Use Filipino-friendly examples
-
-USER PROFILE
-
-Username:
-{username}
-
-User Type:
-{user_type}
-
-Monthly Income:
-₱{income:,.2f}
-
-Current Savings:
-₱{current_savings:,.2f}
-
-Savings Goal:
-₱{savings_goal:,.2f}
-
-Total Spending:
-₱{total_spending:,.2f}
-
-ACTIVE GOAL
-{goal_text}
-
-CURRENT EXPENSES
-{expense_text}
-
-TASKS:
-1. Analyze spending behavior
-2. Suggest savings improvements
-3. Recommend practical budgeting
-4. Mention risks if overspending
-5. Help achieve active goal
-6. Give short actionable advice
-
-Keep response:
-- concise
-- practical
-- future-focused
-- present-date aware
-"""
-
-    response = (
-        client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful "
-                        "financial coach "
-                        "for Filipinos."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.7
+        goal_section = (
+            f"Goal: {active_goal['goal_name']}\n"
+            f"Target: ₱{active_goal['target_amount']:,.2f}\n"
+            f"Deadline: {active_goal['deadline']}"
         )
-    )
 
-    return (
-        response
-        .choices[0]
-        .message.content
-    )
-
-
-# =========================
-# FILE ANALYSIS AI
-# =========================
-
-def analyze_uploaded_financial_file(
-    file_content
-):
-
-    today = datetime.today().strftime(
-        "%Y-%m-%d"
-    )
+    remaining = income - total_spending
+    spending_pct = (total_spending / income * 100) if income > 0 else 0
 
     prompt = f"""
-Today's Date:
-{today}
+TODAY: {_today()}
 
-Analyze this uploaded
-financial tracker.
+USER: {username} ({user_type})
+Monthly Income:   ₱{income:,.2f}
+Total Spending:   ₱{total_spending:,.2f} ({spending_pct:.1f}% of income)
+Remaining:        ₱{remaining:,.2f}
+Current Savings:  ₱{current_savings:,.2f}
+Savings Goal:     ₱{savings_goal:,.2f}
+
+ACTIVE GOAL:
+{goal_section}
+
+RECENT EXPENSES:
+{expense_lines}
+
+INSTRUCTIONS:
+1. Analyze the spending pattern in 2–3 sentences.
+2. Give 3 specific, actionable tips to improve savings.
+3. Comment on progress toward the active goal.
+4. End with one encouraging sentence.
+Use Philippine Peso (₱). Keep it friendly and concise (≤250 words).
+"""
+    system = (
+        "You are a friendly, practical financial coach for Filipinos. "
+        "Be specific, data-driven, and encouraging."
+    )
+    return _chat(system, prompt)
+
+
+# ============================================================
+# 2. UPLOADED FILE ANALYSIS
+# ============================================================
+
+def analyze_uploaded_financial_file(file_content: str) -> str:
+    prompt = f"""
+TODAY: {_today()}
+
+Analyze the following financial tracker data uploaded by a Filipino user.
 
 FILE CONTENT:
-{file_content}
+{file_content[:3000]}
 
-IMPORTANT:
-- Focus on current habits
-- Avoid outdated assumptions
-- Give present-day advice
-- Detect spending patterns
-- Suggest savings opportunities
-- Be practical for Filipinos
+Provide:
+1. Key spending patterns you notice (2–3 observations).
+2. Top 2 areas where the user can cut back.
+3. One savings strategy tailored to the data.
+Keep it under 200 words and use ₱ for currency.
 """
-
-    response = (
-        client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content":
-                    "You are a financial "
-                    "analysis AI."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.7
-        )
-    )
-
-    return (
-        response
-        .choices[0]
-        .message.content
-    )
+    system = "You are a financial analysis AI specializing in Filipino personal finance."
+    return _chat(system, prompt)
 
 
-# =========================
-# FORECAST ADVICE
-# =========================
+# ============================================================
+# 3. FORECAST ADVICE
+# ============================================================
 
-def generate_forecast_advice(
-    monthly_savings,
-    estimated_months
-):
-
-    today = datetime.today().strftime(
-        "%Y-%m-%d"
-    )
+def generate_forecast_advice(monthly_savings: float, estimated_months) -> str:
+    if estimated_months is None:
+        timeline_text = "Goal cannot be reached with current spending (net savings is negative)."
+    else:
+        timeline_text = f"~{estimated_months:.1f} months"
 
     prompt = f"""
-Today's Date:
-{today}
+TODAY: {_today()}
 
-Monthly Savings:
-₱{monthly_savings:,.2f}
+Monthly Net Savings: ₱{monthly_savings:,.2f}
+Estimated Goal Completion: {timeline_text}
 
-Estimated Goal Completion:
-{estimated_months}
-
-Explain forecast using
-present-day financial context.
-
-Give:
-- realistic expectations
-- saving strategies
-- practical budgeting advice
+Give a 3-point forecast summary:
+1. Whether the current savings rate is on track.
+2. What the user can do to shorten the timeline.
+3. A motivating closing remark.
+Keep it under 150 words. Use ₱ for amounts.
 """
-
-    response = (
-        client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content":
-                    "You are a financial "
-                    "forecast assistant."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.7
-        )
-    )
-
-    return (
-        response
-        .choices[0]
-        .message.content
-    )
+    system = "You are a financial forecast assistant for Filipino users."
+    return _chat(system, prompt)
 
 
-# =========================
-# CHATBOT WITH MEMORY
-# =========================
+# ============================================================
+# 4. CHATBOT WITH MEMORY
+# ============================================================
 
 def financial_chatbot_with_memory(
-    username,
-    user_message,
-    chat_history,
-    current_context=""
-):
+    username: str,
+    user_message: str,
+    chat_history: list,
+    current_context: str = "",
+) -> str:
+    system_prompt = f"""
+You are Financial AI Agent — a helpful, friendly financial coach for Filipinos.
+TODAY: {_today()}
 
-    today = datetime.today().strftime(
-        "%Y-%m-%d"
-    )
-
-    messages = [
-        {
-            "role": "system",
-            "content": f"""
-You are Financial AI Agent.
-
-TODAY:
-{today}
+CURRENT FINANCIAL SNAPSHOT:
+{current_context}
 
 RULES:
-- Use CURRENT financial data
-- Avoid old dates
-- Never mention outdated goals
-- Stay present-focused
-- Give practical advice
-- Use Filipino context
-
-CURRENT FINANCIAL CONTEXT:
-{current_context}
+- Base advice on the financial snapshot above.
+- Be concise (≤200 words per reply).
+- Use ₱ for Philippine Peso amounts.
+- If unsure about something, say so honestly.
+- Never fabricate numbers not given to you.
 """
-        }
-    ]
+    try:
+        client = _get_client()
 
-    # =========================
-    # MEMORY
-    # =========================
+        messages = [{"role": "system", "content": system_prompt}]
 
-    for role, message in (
-        chat_history
-    ):
+        # Inject memory (last N turns already filtered in get_chat_history)
+        for role, message in chat_history:
+            messages.append({"role": role, "content": message})
 
-        messages.append({
-            "role": role,
-            "content": message
-        })
+        # Add current user message
+        messages.append({"role": "user", "content": user_message})
 
-    # =========================
-    # USER MESSAGE
-    # =========================
-
-    messages.append({
-        "role": "user",
-        "content": user_message
-    })
-
-    response = (
-        client.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.7
+            temperature=0.7,
+            max_tokens=600,
         )
-    )
+        return response.choices[0].message.content.strip()
 
-    return (
-        response
-        .choices[0]
-        .message.content
-    )
+    except Exception as e:
+        return f"⚠️ Chatbot error: {str(e)}"

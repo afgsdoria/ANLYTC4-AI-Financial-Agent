@@ -1,229 +1,161 @@
+"""
+reports.py
+Generates a downloadable PDF financial report using ReportLab.
+"""
+
+import os
+from datetime import datetime
+
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer,
     Table,
     TableStyle,
-    PageBreak
+    HRFlowable,
 )
-
 from reportlab.lib import colors
-from reportlab.lib.styles import (
-    getSampleStyleSheet
-)
-
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
 
 
 def generate_financial_report(
-    username,
-    advice,
-    score,
-    level,
-    recommendations,
-    alerts,
-    monthly_income,
-    total_spending,
-    current_savings,
-    savings_goal,
-    goal_name=None,
-    target_amount=None,
-    deadline=None
-):
+    username: str,
+    advice: str,
+    score: int,
+    level: str,
+    recommendations: list[str],
+    alerts: list[str],
+    monthly_income: float = 0.0,
+    total_spending: float = 0.0,
+    current_savings: float = 0.0,
+    savings_goal: float = 0.0,
+    goal_name: str | None = None,
+    target_amount: float | None = None,
+    deadline: str | None = None,
+) -> str:
+    """Build a PDF report and return the filename."""
 
-    filename = (
-        f"{username}_financial_report.pdf"
-    )
+    os.makedirs("reports", exist_ok=True)
+    timestamp = datetime.today().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join("reports", f"{username}_financial_report_{timestamp}.pdf")
 
     doc = SimpleDocTemplate(
         filename,
-        pagesize=letter
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
     )
 
     styles = getSampleStyleSheet()
+    accent = colors.HexColor("#1B4F72")
+    light_bg = colors.HexColor("#EBF5FB")
+
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        textColor=accent,
+        fontSize=22,
+        spaceAfter=4,
+    )
+    h2_style = ParagraphStyle(
+        "H2Custom",
+        parent=styles["Heading2"],
+        textColor=accent,
+        fontSize=13,
+        spaceBefore=14,
+        spaceAfter=4,
+    )
+    body_style = styles["BodyText"]
 
     elements = []
 
-    # ==================================
-    # TITLE
-    # ==================================
-
-    title = Paragraph(
-        "💰 <b>Financial AI Agent Report</b>",
-        styles["Title"]
-    )
-
-    elements.append(title)
-
+    # ── Title ──────────────────────────────────────────────
+    elements.append(Paragraph("💰 Financial AI Agent Report", title_style))
     elements.append(
         Paragraph(
-            f"Generated for: <b>{username}</b>",
-            styles["Heading3"]
+            f"Prepared for: <b>{username}</b> &nbsp;|&nbsp; "
+            f"Date: {datetime.today().strftime('%B %d, %Y')}",
+            body_style,
         )
     )
+    elements.append(HRFlowable(width="100%", thickness=1, color=accent))
+    elements.append(Spacer(1, 12))
 
-    elements.append(Spacer(1, 15))
+    # ── Financial Summary ──────────────────────────────────
+    elements.append(Paragraph("📌 Financial Summary", h2_style))
 
-    # ==================================
-    # USER SUMMARY
-    # ==================================
-
-    elements.append(
-        Paragraph(
-            "📌 Financial Summary",
-            styles["Heading2"]
-        )
-    )
-
+    remaining = monthly_income - total_spending
     summary_data = [
-        ["Category", "Value"],
-        ["Monthly Income", f"₱{monthly_income:,.2f}"],
-        ["Total Spending", f"₱{total_spending:,.2f}"],
+        ["Item", "Amount"],
+        ["Monthly Income",  f"₱{monthly_income:,.2f}"],
+        ["Total Spending",  f"₱{total_spending:,.2f}"],
+        ["Remaining",       f"₱{remaining:,.2f}"],
         ["Current Savings", f"₱{current_savings:,.2f}"],
-        ["Savings Goal", f"₱{savings_goal:,.2f}"],
-        ["Health Score", f"{score}/100"],
-        ["Financial Status", level]
+        ["Savings Goal",    f"₱{savings_goal:,.2f}"],
+        ["Health Score",    f"{score}/100 — {level}"],
     ]
 
-    summary_table = Table(
-        summary_data,
-        colWidths=[220, 220]
-    )
-
-    summary_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-        ("GRID", (0, 0), (-1, -1), 1, colors.black),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10)
+    tbl = Table(summary_data, colWidths=[3 * inch, 3 * inch])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",   (0, 0), (-1, 0), accent),
+        ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BACKGROUND",   (0, 1), (-1, -1), light_bg),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, light_bg]),
+        ("GRID",         (0, 0), (-1, -1), 0.5, colors.lightgrey),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING",   (0, 0), (-1, -1), 8),
     ]))
+    elements.append(tbl)
+    elements.append(Spacer(1, 12))
 
-    elements.append(summary_table)
-
-    elements.append(Spacer(1, 20))
-
-    # ==================================
-    # GOAL SECTION
-    # ==================================
-
-    elements.append(
-        Paragraph(
-            "🎯 Financial Goal",
-            styles["Heading2"]
-        )
-    )
-
+    # ── Active Goal ────────────────────────────────────────
+    elements.append(Paragraph("🎯 Active Financial Goal", h2_style))
     if goal_name:
-
-        goal_text = f"""
-        <b>Goal:</b> {goal_name}<br/>
-        <b>Target Amount:</b>
-        ₱{target_amount:,.2f}<br/>
-        <b>Deadline:</b>
-        {deadline}
-        """
-
+        elements.append(
+            Paragraph(
+                f"<b>Goal:</b> {goal_name}<br/>"
+                f"<b>Target Amount:</b> ₱{target_amount:,.2f}<br/>"
+                f"<b>Deadline:</b> {deadline}",
+                body_style,
+            )
+        )
     else:
+        elements.append(Paragraph("No active financial goal set.", body_style))
+    elements.append(Spacer(1, 12))
 
-        goal_text = (
-            "No financial goal set."
-        )
-
-    elements.append(
-        Paragraph(
-            goal_text,
-            styles["BodyText"]
-        )
-    )
-
-    elements.append(Spacer(1, 20))
-
-    # ==================================
-    # ALERTS
-    # ==================================
-
-    elements.append(
-        Paragraph(
-            "🚨 AI Spending Alerts",
-            styles["Heading2"]
-        )
-    )
-
+    # ── Spending Alerts ────────────────────────────────────
+    elements.append(Paragraph("🚨 Spending Alerts", h2_style))
     if alerts:
-
         for alert in alerts:
-
-            elements.append(
-                Paragraph(
-                    f"• {alert}",
-                    styles["BodyText"]
-                )
-            )
-
+            elements.append(Paragraph(f"• {alert}", body_style))
     else:
+        elements.append(Paragraph("✅ No spending risks detected.", body_style))
+    elements.append(Spacer(1, 12))
 
-        elements.append(
-            Paragraph(
-                "No spending risks detected.",
-                styles["BodyText"]
-            )
-        )
+    # ── Recommendations ────────────────────────────────────
+    elements.append(Paragraph("💡 Smart Recommendations", h2_style))
+    for rec in recommendations:
+        elements.append(Paragraph(f"• {rec}", body_style))
+    elements.append(Spacer(1, 12))
 
+    # ── AI Analysis ───────────────────────────────────────
+    elements.append(Paragraph("🤖 AI Financial Analysis", h2_style))
+    elements.append(Paragraph(advice.replace("\n", "<br/>"), body_style))
     elements.append(Spacer(1, 20))
 
-    # ==================================
-    # RECOMMENDATIONS
-    # ==================================
-
+    # ── Footer ────────────────────────────────────────────
+    elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
     elements.append(
         Paragraph(
-            "💡 Smart Recommendations",
-            styles["Heading2"]
-        )
-    )
-
-    for recommendation in recommendations:
-
-        elements.append(
-            Paragraph(
-                f"• {recommendation}",
-                styles["BodyText"]
-            )
-        )
-
-    elements.append(Spacer(1, 20))
-
-    # ==================================
-    # AI ANALYSIS
-    # ==================================
-
-    elements.append(
-        Paragraph(
-            "🤖 AI Financial Analysis",
-            styles["Heading2"]
-        )
-    )
-
-    elements.append(
-        Paragraph(
-            advice,
-            styles["BodyText"]
-        )
-    )
-
-    elements.append(Spacer(1, 20))
-
-    # ==================================
-    # FOOTER
-    # ==================================
-
-    elements.append(
-        Paragraph(
-            "Generated using Financial AI Agent",
-            styles["Italic"]
+            "Generated by Financial AI Agent · For personal reference only.",
+            styles["Italic"],
         )
     )
 
     doc.build(elements)
-
     return filename

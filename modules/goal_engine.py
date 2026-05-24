@@ -1,208 +1,161 @@
+"""
+goal_engine.py
+Converts natural-language goal statements into structured goal dicts.
+"""
+
 import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 
-def extract_goal_from_text(
-    text,
-    monthly_income=0
-):
+# Maps common item keywords to sensible default amounts (₱)
+_AMOUNT_HINTS = {
+    "laptop":        50_000,
+    "phone":         25_000,
+    "smartphone":    25_000,
+    "iphone":        60_000,
+    "concert":        5_000,
+    "ticket":         3_000,
+    "vacation":      30_000,
+    "travel":        30_000,
+    "trip":          20_000,
+    "car":          700_000,
+    "motorcycle":   100_000,
+    "emergency fund": 50_000,
+    "emergency":     50_000,
+    "tuition":       30_000,
+    "school":        15_000,
+    "rent":          15_000,
+    "wedding":      200_000,
+    "gadget":        20_000,
+    "airpods":       15_000,
+    "tablet":        25_000,
+}
 
+_MONTH_NAMES = (
+    "january|february|march|april|may|june|"
+    "july|august|september|october|november|december"
+)
+
+
+def _extract_amount(text: str) -> float:
+    """Pull the first peso amount from the text, else 0."""
+    # Handles: ₱50,000 / 50000 / 50,000 / P50000
+    match = re.search(r"[₱P]?\s?([\d,]+(?:\.\d+)?)\b", text)
+    if match:
+        raw = match.group(1).replace(",", "")
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _infer_amount_from_keyword(text_lower: str) -> float:
+    for keyword, amount in _AMOUNT_HINTS.items():
+        if keyword in text_lower:
+            return float(amount)
+    return 0.0
+
+
+def _extract_goal_name(text_lower: str) -> str:
+    patterns = [
+        r"(?:save for|saving for|to buy|for a|for an|for my|for the)\s+(.+?)(?:\s+(?:in|by|within|before|worth|costing|amounting)|$)",
+        r"(?:want to|plan to|trying to)\s+(?:save|buy|purchase|get)\s+(.+?)(?:\s+(?:in|by|within|before)|$)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text_lower)
+        if m:
+            name = m.group(1).strip().title()
+            # Trim trailing noise words
+            name = re.sub(
+                r"\s*(worth|costing|amounting|that costs?|priced at).*$",
+                "",
+                name,
+                flags=re.IGNORECASE,
+            ).strip()
+            if name:
+                return name
+    return "Savings Goal"
+
+
+def _extract_deadline(text_lower: str, today: datetime) -> str | None:
+    """Return deadline string or None if not found."""
+
+    # Pattern: "in X months"
+    m = re.search(r"in\s+(\d+)\s+month", text_lower)
+    if m:
+        return (today + relativedelta(months=int(m.group(1)))).strftime("%Y-%m-%d")
+
+    # Pattern: "within X months"
+    m = re.search(r"within\s+(\d+)\s+month", text_lower)
+    if m:
+        return (today + relativedelta(months=int(m.group(1)))).strftime("%Y-%m-%d")
+
+    # Pattern: "in X years" / "within X years"
+    m = re.search(r"(?:in|within)\s+(\d+)\s+year", text_lower)
+    if m:
+        return (today + relativedelta(years=int(m.group(1)))).strftime("%Y-%m-%d")
+
+    # Pattern: "by January 2027" / "before Dec 2026"
+    m = re.search(
+        rf"(?:by|before|until)\s+({_MONTH_NAMES})\s+(\d{{4}})",
+        text_lower,
+    )
+    if m:
+        try:
+            d = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%B %Y")
+            return d.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    # Pattern: ISO date "2026-12-31"
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", text_lower)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def extract_goal_from_text(text: str, monthly_income: float = 0.0) -> dict:
+    """
+    Parse a natural-language goal statement into a structured dict.
+
+    Returns:
+        {
+            "goal_name":     str,
+            "target_amount": float,
+            "deadline":      str,   # YYYY-MM-DD
+        }
+    """
+    today = datetime.today()
     text_lower = text.lower()
 
-    # =========================
-    # DEFAULT VALUES
-    # =========================
+    # --- Amount ---
+    target_amount = _extract_amount(text)
+    if target_amount == 0.0:
+        target_amount = _infer_amount_from_keyword(text_lower)
 
-    goal_name = "General Savings Goal"
-    target_amount = 0
-    deadline = "No deadline set"
+    # --- Goal name ---
+    goal_name = _extract_goal_name(text_lower)
 
-    today = datetime.today()
+    # --- Deadline ---
+    deadline = _extract_deadline(text_lower, today)
 
-    # =========================
-    # EXTRACT MONEY
-    # =========================
-
-    amount_match = re.search(
-        r'₱?\s?([\d,]+)',
-        text
-    )
-
-    if amount_match:
-
-        target_amount = float(
-            amount_match.group(1)
-            .replace(",", "")
-        )
-
-    # =========================
-    # EXTRACT GOAL NAME
-    # =========================
-
-    goal_patterns = [
-
-        r'for\s(.+?)(?:\sby|\swithin|\sin|\sbefore|$)',
-
-        r'to buy\s(.+?)(?:\sby|\swithin|\sin|\sbefore|$)',
-
-        r'to save for\s(.+?)(?:\sby|\swithin|\sin|\sbefore|$)'
-    ]
-
-    for pattern in goal_patterns:
-
-        match = re.search(
-            pattern,
-            text_lower
-        )
-
-        if match:
-
-            goal_name = (
-                match.group(1)
-                .strip()
-                .title()
-            )
-
-            break
-
-    # =========================
-    # MONTHS
-    # Example:
-    # within 8 months
-    # in 6 months
-    # =========================
-
-    months_match = re.search(
-        r'(\d+)\smonth',
-        text_lower
-    )
-
-    if months_match:
-
-        months = int(
-            months_match.group(1)
-        )
-
-        future_date = (
-            today +
-            relativedelta(
-                months=months
-            )
-        )
-
-        deadline = future_date.strftime(
-            "%Y-%m-%d"
-        )
-
-    # =========================
-    # YEARS
-    # Example:
-    # within 2 years
-    # in 1 year
-    # =========================
-
-    years_match = re.search(
-        r'(\d+)\syear',
-        text_lower
-    )
-
-    if years_match:
-
-        years = int(
-            years_match.group(1)
-        )
-
-        future_date = (
-            today +
-            relativedelta(
-                years=years
-            )
-        )
-
-        deadline = future_date.strftime(
-            "%Y-%m-%d"
-        )
-
-    # =========================
-    # SPECIFIC DATE
-    # Example:
-    # before Dec 2026
-    # by January 2027
-    # before 2027-12-31
-    # =========================
-
-    month_names = (
-        "january|february|march|april|"
-        "may|june|july|august|"
-        "september|october|november|"
-        "december"
-    )
-
-    specific_match = re.search(
-        rf"(?:before|by|in)\s("
-        rf"(?:{month_names})"
-        rf"\s+\d{{4}}"
-        rf")",
-        text_lower
-    )
-
-    if specific_match:
-
-        date_text = specific_match.group(1)
-
-        parsed_date = datetime.strptime(
-            date_text,
-            "%B %Y"
-        )
-
-        deadline = parsed_date.strftime(
-            "%Y-%m-%d"
-        )
-
-    # =========================
-    # ESTIMATE DATE
-    # If user gives target amount
-    # but no deadline
-    # =========================
-
-    if (
-        deadline == "No deadline set"
-        and monthly_income > 0
-        and target_amount > 0
-    ):
-
-        estimated_monthly_savings = (
-            monthly_income * 0.20
-        )
-
-        estimated_months = max(
-            1,
-            round(
-                target_amount /
-                estimated_monthly_savings
-            )
-        )
-
-        estimated_date = (
-            today +
-            relativedelta(
-                months=estimated_months
-            )
-        )
-
-        deadline = (
-            estimated_date.strftime(
-                "%Y-%m-%d"
-            )
-        )
-
-    # =========================
-    # RETURN
-    # =========================
+    # If no deadline given, estimate from monthly income (20% savings rate)
+    if deadline is None:
+        if monthly_income > 0 and target_amount > 0:
+            monthly_savings = monthly_income * 0.20
+            estimated_months = max(1, round(target_amount / monthly_savings))
+            deadline = (
+                today + relativedelta(months=estimated_months)
+            ).strftime("%Y-%m-%d")
+        else:
+            # Default: 6 months
+            deadline = (today + relativedelta(months=6)).strftime("%Y-%m-%d")
 
     return {
-        "goal_name": goal_name,
+        "goal_name":     goal_name,
         "target_amount": target_amount,
-        "deadline": deadline
+        "deadline":      deadline,
     }

@@ -291,13 +291,16 @@ for k, v in DEFAULTS.items():
 def _load_user_into_session(udata: dict, username: str):
     st.session_state.username        = username
     st.session_state.user_type       = udata.get("user_type", "Student")
-    # The DB stores computed age (integer). Birthday is kept in session only.
-    # On login, we restore the stored age; birthday will be re-entered in Settings if needed.
-    stored_age = udata.get("age", 18) or 18
-    st.session_state.age      = stored_age
-    # Don't overwrite birthday if it's already in session (same session re-login)
-    if "birthday" not in st.session_state:
+    birthday = udata.get("birthday")
+    if birthday:
+        st.session_state.birthday = birthday
+        try:
+            st.session_state.age = compute_age(datetime.strptime(birthday, "%Y-%m-%d").date())
+        except Exception:
+            st.session_state.age = udata.get("age", 18) or 18
+    else:
         st.session_state.birthday = None
+        st.session_state.age = udata.get("age", 18) or 18
     st.session_state.monthly_income  = udata.get("monthly_income", 0.0)
     st.session_state.savings_goal    = udata.get("savings_goal", 0.0)
     st.session_state.current_savings = udata.get("current_savings", 0.0)
@@ -306,9 +309,32 @@ def _load_user_into_session(udata: dict, username: str):
     st.session_state.file_context    = udata.get("file_context")
 
 
+def _deactivate_completed_goals(username: str, current_savings: float):
+    active_goals = get_active_goals(username)
+    for goal in active_goals:
+        try:
+            target = float(goal.get("target_amount", 0) or 0)
+        except Exception:
+            target = 0.0
+        if target > 0 and current_savings >= target:
+            toggle_goal_active(username, goal["id"], False)
+
+
+def _auto_generate_report(username: str, income: float, savings: float, goal_amt: float):
+    try:
+        pdf_path, report_data = _build_report(username, income, savings, goal_amt)
+        st.session_state.cached_report_path = pdf_path
+        st.session_state.cached_report_data = report_data
+        st.session_state.cached_report_ts = datetime.now().strftime("%B %d, %Y %I:%M %p")
+        st.session_state.report_needs_regen = False
+    except Exception as exc:
+        st.warning(f"Could not generate the latest report automatically: {exc}")
+
+
 def _trigger_ai_analysis():
     """Run the full agentic analysis and cache it in DB + session."""
     uname    = st.session_state.username
+    _deactivate_completed_goals(uname, st.session_state.current_savings)
     expenses = get_expenses(uname)
     spending = get_total_spending(uname)
     goal     = get_active_goal(uname)
@@ -327,8 +353,12 @@ def _trigger_ai_analysis():
     plan_text = json.dumps(result.get("step_plan", []))
     save_ai_analysis(uname, result.get("health_summary",""), plan_text)
     st.session_state.ai_analysis = result
-    # Mark that a new report should be encouraged
-    st.session_state.report_needs_regen = True
+    _auto_generate_report(
+        uname,
+        st.session_state.monthly_income,
+        st.session_state.current_savings,
+        st.session_state.savings_goal,
+    )
 
 
 def _build_report(uname: str, income: float, savings: float, goal_amt: float) -> tuple[str, dict]:
@@ -601,6 +631,7 @@ elif st.session_state.app_stage == "onboard":
             monthly_income  = monthly_income,
             savings_goal    = savings_goal_overall,
             current_savings = current_savings,
+            birthday        = str(bday_input),
             age             = int(age),
             report_schedule = report_schedule,
             report_date     = report_date,
@@ -634,20 +665,6 @@ elif st.session_state.app_stage == "onboard":
         set_onboarding_done(st.session_state.username)
         with st.spinner("🤖 AI Agent is analyzing your finances and building your personalized dashboard… (this takes ~15 seconds)"):
             _trigger_ai_analysis()
-
-        # ── AUTO-GENERATE first report right after onboarding ────────────
-        uname_ob = st.session_state.username
-        with st.spinner("📄 Generating your first financial report…"):
-            try:
-                pdf_path_ob, report_data_ob = _build_report(
-                    uname_ob, monthly_income, current_savings, savings_goal_overall
-                )
-                st.session_state.cached_report_path = pdf_path_ob
-                st.session_state.cached_report_data = report_data_ob
-                st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
-                st.session_state.report_needs_regen = False
-            except Exception as e:
-                st.warning(f"Report could not be generated automatically: {e}")
 
         st.session_state.app_stage = "dashboard"
         st.rerun()
@@ -686,6 +703,9 @@ elif st.session_state.app_stage == "dashboard":
             }
 
     ai = st.session_state.ai_analysis or {}
+
+    if not st.session_state.cached_report_path:
+        _auto_generate_report(uname, income, savings, goal_amt)
 
     # ── SIDEBAR ──────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -761,6 +781,7 @@ elif st.session_state.app_stage == "dashboard":
                             st.session_state.monthly_income,
                             st.session_state.savings_goal,
                             new_savings,
+                            st.session_state.birthday,
                             int(st.session_state.age),
                             st.session_state.report_schedule,
                             st.session_state.get("report_date"),
@@ -818,10 +839,6 @@ elif st.session_state.app_stage == "dashboard":
             st.session_state.sidebar_goal_success = None
 
         st.markdown("---")
-        if st.button("🔄 Re-run AI Analysis", use_container_width=True):
-            with st.spinner("Running AI analysis…"):
-                _trigger_ai_analysis()
-            st.rerun()
 
         if st.button("🚪 Logout", use_container_width=True):
             for k in list(st.session_state.keys()):
@@ -1004,15 +1021,26 @@ elif st.session_state.app_stage == "dashboard":
         fig_fc.update_layout(height=340, margin=dict(t=30, b=20, l=20, r=20), **pcfg())
         st.plotly_chart(fig_fc, use_container_width=True)
 
+        st.markdown("---")
+        st.markdown("### 📄 Your Latest Report")
+        if st.session_state.cached_report_path and os.path.exists(st.session_state.cached_report_path):
+            with open(st.session_state.cached_report_path, "rb") as f_pdf:
+                st.download_button(
+                    "⬇️ Download Latest PDF Report",
+                    data=f_pdf,
+                    file_name=f"{uname}_financial_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dashboard_report_dl",
+                )
+            if st.session_state.cached_report_ts:
+                st.caption(f"Latest PDF generated: {st.session_state.cached_report_ts}")
+        else:
+            st.info("📋 Your PDF report is generated automatically when your data changes.")
+
         if ai.get("forecast_narrative"):
             st.info(f"🤖 {ai['forecast_narrative']}")
 
-        if st.button("🤖 Get Fresh AI Forecast Advice", key="dash_forecast_btn"):
-            with st.spinner("Generating forecast advice…"):
-                adv = generate_forecast_advice(monthly_sav, est_mo)
-            shdr("AI Forecast Analysis")
-            ai_badge()
-            st.info(adv)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2 — ACTION PLAN
@@ -1056,7 +1084,7 @@ elif st.session_state.app_stage == "dashboard":
                     unsafe_allow_html=True,
                 )
         else:
-            st.info("Run the AI analysis (sidebar → 🔄 Re-run AI Analysis) to generate your action plan.")
+            st.info("Your action plan updates automatically when your data changes.")
 
         st.markdown("---")
         shdr("💡 Smart Recommendations")
@@ -1122,6 +1150,7 @@ elif st.session_state.app_stage == "dashboard":
                             st.session_state.monthly_income,
                             st.session_state.savings_goal,
                             new_savings,
+                            st.session_state.birthday,
                             int(st.session_state.age),
                             st.session_state.report_schedule,
                             st.session_state.get("report_date"),
@@ -1225,57 +1254,21 @@ elif st.session_state.app_stage == "dashboard":
         if schedule_matches:
             st.success("🎉 Today matches your report schedule!")
 
-        if st.session_state.report_needs_regen and st.session_state.cached_report_path:
-            st.warning(
-                "⚠️ Your data changed since the last report. "
-                "Click **🔄 Update Report** to refresh."
+        if st.session_state.cached_report_path and os.path.exists(st.session_state.cached_report_path):
+            with open(st.session_state.cached_report_path, "rb") as f_pdf:
+                st.download_button(
+                    "⬇️ Download PDF Report",
+                    data=f_pdf,
+                    file_name=f"{uname}_financial_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="rpt_download",
+                )
+        else:
+            st.info(
+                "📋 Your report is generated automatically whenever your data changes. "
+                "It will appear here as soon as it is ready."
             )
-
-        # ── Action buttons (always visible) ──────────────────────────────
-        btn_c1, btn_c2 = st.columns(2)
-
-        with btn_c1:
-            if st.button("🔄 Update Report", use_container_width=True, key="rpt_update"):
-                with st.spinner("🤖 Re-running AI analysis…"):
-                    _trigger_ai_analysis()
-                with st.spinner("📄 Building updated report…"):
-                    try:
-                        new_path, new_data = _build_report(uname, income, savings, goal_amt)
-                        st.session_state.cached_report_path = new_path
-                        st.session_state.cached_report_data = new_data
-                        st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
-                        st.session_state.report_needs_regen = False
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to generate report: {e}")
-
-        with btn_c2:
-            rpt_dl_path = st.session_state.cached_report_path
-            if rpt_dl_path and os.path.exists(rpt_dl_path):
-                with open(rpt_dl_path, "rb") as f_pdf:
-                    st.download_button(
-                        "⬇️ Download PDF Report",
-                        data=f_pdf,
-                        file_name=f"{uname}_financial_report.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        key="rpt_download",
-                    )
-            else:
-                # No PDF yet — generate on first click
-                if st.button("🖨️ Generate Report Now", use_container_width=True, key="rpt_gen_first"):
-                    with st.spinner("🤖 Generating AI analysis…"):
-                        _trigger_ai_analysis()
-                    with st.spinner("📄 Building report…"):
-                        try:
-                            new_path, new_data = _build_report(uname, income, savings, goal_amt)
-                            st.session_state.cached_report_path = new_path
-                            st.session_state.cached_report_data = new_data
-                            st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
-                            st.session_state.report_needs_regen = False
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to generate report: {e}")
 
         # ── Inline report display ─────────────────────────────────────────
         rd = st.session_state.cached_report_data
@@ -1401,7 +1394,7 @@ elif st.session_state.app_stage == "dashboard":
 
         elif not st.session_state.cached_report_path:
             st.markdown("---")
-            st.info("📋 No report yet. Click **🖨️ Generate Report Now** above to create your first one.")
+            st.info("📋 No report yet. Your report will be created automatically as soon as your data is analyzed.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 6 — SETTINGS
@@ -1443,7 +1436,8 @@ elif st.session_state.app_stage == "dashboard":
             u_goal = st.number_input("Savings Target (₱)", min_value=0.0,
                                       value=float(goal_amt), step=1000.0, format="%.2f")
             if st.form_submit_button("💾 Save Changes", use_container_width=True):
-                save_user(uname, u_type, u_inc, u_goal, u_sav, int(u_age),
+                save_user(uname, u_type, u_inc, u_goal, u_sav,
+                          str(u_bday), int(u_age),
                           st.session_state.report_schedule,
                           st.session_state.get("report_date"),
                           st.session_state.file_context, 1)
@@ -1506,6 +1500,8 @@ elif st.session_state.app_stage == "dashboard":
                     btn_label = "⏸ Deactivate" if gactive else "▶ Activate"
                     if st.button(btn_label, key=f"tog_{gid}", use_container_width=True):
                         toggle_goal_active(uname, gid, not bool(gactive))
+                        with st.spinner("Updating your plan and report…"):
+                            _trigger_ai_analysis()
                         st.success(
                             f"✅ Goal **{gname}** {'deactivated' if gactive else 'activated'} successfully."
                         )
@@ -1516,6 +1512,8 @@ elif st.session_state.app_stage == "dashboard":
                 with gc4:
                     if st.button("🗑️", key=f"dg_{gid}", help="Delete"):
                         delete_goal(gid)
+                        with st.spinner("Updating your plan and report…"):
+                            _trigger_ai_analysis()
                         st.success(f"✅ Goal **{gname}** deleted.")
                         st.rerun()
                 if st.session_state.get(f"em_{gid}"):
@@ -1527,6 +1525,8 @@ elif st.session_state.app_stage == "dashboard":
                         if cs_.form_submit_button("💾 Save"):
                             update_goal(gid, n, a, d)
                             st.session_state[f"em_{gid}"] = False
+                            with st.spinner("Updating your plan and report…"):
+                                _trigger_ai_analysis()
                             st.success(f"✅ Goal **{n}** updated successfully.")
                             st.rerun()
                         if cc_.form_submit_button("✖ Cancel"):

@@ -28,9 +28,10 @@ def generate_financial_report(
     target_amount: float | None = None,
     deadline: str | None = None,
 ) -> str:
-    os.makedirs("reports", exist_ok=True)
+    output_dir = os.path.join("data", "exports", "reports")
+    os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.today().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join("reports", f"{username}_financial_report_{timestamp}.pdf")
+    filename = os.path.join(output_dir, f"{username}_financial_report_{timestamp}.pdf")
     doc = SimpleDocTemplate(
         filename, pagesize=letter,
         leftMargin=0.75*inch, rightMargin=0.75*inch,

@@ -34,6 +34,7 @@ def create_tables():
         username         TEXT UNIQUE NOT NULL,
         user_type        TEXT DEFAULT 'Student',
         age              INTEGER DEFAULT 0,
+        birthday         TEXT DEFAULT NULL,
         monthly_income   REAL DEFAULT 0,
         savings_goal     REAL DEFAULT 0,
         current_savings  REAL DEFAULT 0,
@@ -86,6 +87,7 @@ def create_tables():
             c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
 
     _add_col("users", "age",             "INTEGER DEFAULT 0")
+    _add_col("users", "birthday",        "TEXT DEFAULT NULL")
     _add_col("users", "report_schedule", "TEXT DEFAULT 'monthly'")
     _add_col("users", "report_date",     "TEXT DEFAULT NULL")
     _add_col("users", "file_context",    "TEXT DEFAULT NULL")
@@ -101,19 +103,20 @@ def create_tables():
 # ─────────────────────────────────────────────────────────
 
 def save_user(username, user_type, monthly_income, savings_goal,
-              current_savings, age=0, report_schedule="monthly",
+              current_savings, birthday=None, age=0, report_schedule="monthly",
               report_date=None, file_context=None, onboarding_done=0):
     conn = connect_db()
     c = conn.cursor()
     c.execute("""
         INSERT INTO users
-            (username, user_type, age, monthly_income, savings_goal,
+            (username, user_type, age, birthday, monthly_income, savings_goal,
              current_savings, report_schedule, report_date,
              file_context, onboarding_done)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(username) DO UPDATE SET
             user_type        = excluded.user_type,
             age              = excluded.age,
+            birthday         = excluded.birthday,
             monthly_income   = excluded.monthly_income,
             savings_goal     = excluded.savings_goal,
             current_savings  = excluded.current_savings,
@@ -121,7 +124,7 @@ def save_user(username, user_type, monthly_income, savings_goal,
             report_date      = excluded.report_date,
             file_context     = COALESCE(excluded.file_context, file_context),
             onboarding_done  = excluded.onboarding_done
-    """, (username, user_type, age, monthly_income, savings_goal,
+    """, (username, user_type, age, birthday, monthly_income, savings_goal,
           current_savings, report_schedule, report_date,
           file_context, onboarding_done))
     conn.commit()
@@ -133,7 +136,7 @@ def get_user(username):
     c = conn.cursor()
     c.execute("""
         SELECT user_type, monthly_income, savings_goal, current_savings,
-               age, report_schedule, report_date, file_context, onboarding_done
+               age, birthday, report_schedule, report_date, file_context, onboarding_done
         FROM users WHERE username = ?
     """, (username,))
     row = c.fetchone()

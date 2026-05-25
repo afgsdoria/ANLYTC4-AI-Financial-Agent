@@ -280,6 +280,7 @@ DEFAULTS = dict(
     # report state
     cached_report_path=None,       # path of most recently generated PDF
     cached_report_ts=None,         # timestamp label of that PDF
+    cached_report_data=None,       # dict of inline report data
     report_needs_regen=False,      # flag: data changed, suggest refresh
 )
 for k, v in DEFAULTS.items():
@@ -330,8 +331,8 @@ def _trigger_ai_analysis():
     st.session_state.report_needs_regen = True
 
 
-def _build_report(uname: str, income: float, savings: float, goal_amt: float) -> str:
-    """Generate PDF report and return the file path."""
+def _build_report(uname: str, income: float, savings: float, goal_amt: float) -> tuple[str, dict]:
+    """Generate PDF report and return (file_path, report_data_dict) for inline display."""
     spending_r = get_total_spending(uname)
     expenses_r = get_expenses(uname)
     active_r   = get_active_goal(uname)
@@ -353,7 +354,21 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
         target_amount=active_r["target_amount"] if active_r else None,
         deadline=active_r["deadline"]           if active_r else None,
     )
-    return pdf_path
+    report_data = {
+        "score":          score_r,
+        "level":          level_r,
+        "income":         income,
+        "spending":       spending_r,
+        "savings":        savings,
+        "goal_amt":       goal_amt,
+        "remaining":      income - spending_r,
+        "alerts":         alerts_r,
+        "recommendations":recs_r,
+        "advice":         advice_r,
+        "active_goal":    active_r,
+        "generated_at":   datetime.now().strftime("%B %d, %Y %I:%M %p"),
+    }
+    return pdf_path, report_data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -624,10 +639,11 @@ elif st.session_state.app_stage == "onboard":
         uname_ob = st.session_state.username
         with st.spinner("📄 Generating your first financial report…"):
             try:
-                pdf_path_ob = _build_report(
+                pdf_path_ob, report_data_ob = _build_report(
                     uname_ob, monthly_income, current_savings, savings_goal_overall
                 )
                 st.session_state.cached_report_path = pdf_path_ob
+                st.session_state.cached_report_data = report_data_ob
                 st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
                 st.session_state.report_needs_regen = False
             except Exception as e:
@@ -734,9 +750,32 @@ elif st.session_state.app_stage == "dashboard":
                     st.error("⚠️ You cannot log expenses for future dates.")
                 else:
                     add_expense(uname, exp_cat, exp_amt, str(exp_date))
-                    st.session_state.sidebar_exp_success = (
-                        f"✅ Successfully logged {pesos(exp_amt)} ({exp_cat}) on {exp_date}!"
-                    )
+
+                    # ── If category is Savings, add to current_savings ──
+                    if exp_cat == "Savings":
+                        new_savings = st.session_state.current_savings + exp_amt
+                        st.session_state.current_savings = new_savings
+                        save_user(
+                            uname,
+                            st.session_state.user_type,
+                            st.session_state.monthly_income,
+                            st.session_state.savings_goal,
+                            new_savings,
+                            int(st.session_state.age),
+                            st.session_state.report_schedule,
+                            st.session_state.get("report_date"),
+                            st.session_state.file_context,
+                            1,
+                        )
+                        st.session_state.sidebar_exp_success = (
+                            f"✅ Logged {pesos(exp_amt)} as Savings! "
+                            f"Total savings updated to {pesos(new_savings)}."
+                        )
+                    else:
+                        st.session_state.sidebar_exp_success = (
+                            f"✅ Successfully logged {pesos(exp_amt)} ({exp_cat}) on {exp_date}!"
+                        )
+
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
                     st.rerun()
@@ -1073,6 +1112,22 @@ elif st.session_state.app_stage == "dashboard":
                 c3.markdown(f"<span style='color:#60A5FA;font-weight:700'>{pesos(row['Amount'])}</span>",
                              unsafe_allow_html=True)
                 if c4.button("🗑️", key=f"del_{row['ID']}", help="Delete"):
+                    # If it's a savings entry, reverse the savings addition
+                    if row["Category"] == "Savings":
+                        new_savings = max(0.0, st.session_state.current_savings - float(row["Amount"]))
+                        st.session_state.current_savings = new_savings
+                        save_user(
+                            uname,
+                            st.session_state.user_type,
+                            st.session_state.monthly_income,
+                            st.session_state.savings_goal,
+                            new_savings,
+                            int(st.session_state.age),
+                            st.session_state.report_schedule,
+                            st.session_state.get("report_date"),
+                            st.session_state.file_context,
+                            1,
+                        )
                     delete_expense(int(row["ID"]))
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
@@ -1144,116 +1199,209 @@ elif st.session_state.app_stage == "dashboard":
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 5 — REPORT
-    # Behaviour:
-    #   • First-time users: report auto-generated during onboarding — show it here.
-    #   • Returning users with a cached report: display report info + Update / Download.
-    #   • Schedule badge always visible.
-    #   • "Update Report" re-generates with latest data.
+    # • Report is rendered INLINE in the UI (not just a download card).
+    # • First-time users: auto-generated at end of onboarding.
+    # • All users: "Update Report" re-runs AI + re-renders; "Download PDF" saves file.
     # ══════════════════════════════════════════════════════════════════════════
     with t_report:
         st.markdown("## 📄 Financial Report")
 
-        # Schedule info
+        # ── Schedule badge ────────────────────────────────────────────────
         sched     = st.session_state.report_schedule
         rdate_str = st.session_state.report_date
         rdate_info = f" on **{rdate_str}**" if sched == "custom date" and rdate_str else ""
         st.info(
-            f"📅 Your report schedule: **{sched.capitalize()}**{rdate_info} "
-            "— you can change this in ⚙️ Settings."
+            f"📅 Report schedule: **{sched.capitalize()}**{rdate_info} "
+            "— change this in ⚙️ Settings."
         )
 
-        # Check if today matches scheduled report day
         today_str = str(date.today())
-        schedule_matches = False
-        if sched == "daily":
-            schedule_matches = True
-        elif sched == "weekly":
-            schedule_matches = date.today().weekday() == 0   # Monday
-        elif sched == "monthly":
-            schedule_matches = date.today().day == 1
-        elif sched == "custom date" and rdate_str == today_str:
-            schedule_matches = True
-
+        schedule_matches = (
+            sched == "daily" or
+            (sched == "weekly"      and date.today().weekday() == 0) or
+            (sched == "monthly"     and date.today().day == 1) or
+            (sched == "custom date" and rdate_str == today_str)
+        )
         if schedule_matches:
-            st.success("🎉 Today matches your report schedule! Your report is ready below.")
+            st.success("🎉 Today matches your report schedule!")
 
-        # Stale-data warning
         if st.session_state.report_needs_regen and st.session_state.cached_report_path:
             st.warning(
-                "⚠️ Your financial data has changed since the last report was generated. "
-                "Click **Update Report** to refresh it with the latest figures."
+                "⚠️ Your data changed since the last report. "
+                "Click **🔄 Update Report** to refresh."
             )
 
-        cached_path = st.session_state.cached_report_path
-        cached_ts   = st.session_state.cached_report_ts
+        # ── Action buttons (always visible) ──────────────────────────────
+        btn_c1, btn_c2 = st.columns(2)
 
-        # ── Show existing report if available ────────────────────────────
-        if cached_path and os.path.exists(cached_path):
-            st.markdown(
-                f'<div class="report-card">'
-                f'<h4>📋 Latest Report</h4>'
-                f'<p>Generated: <strong style="color:#60A5FA">{cached_ts or "—"}</strong></p>'
-                f'<p style="margin-top:6px;color:#64748B;font-size:.8rem">'
-                f'This report includes your financial health score, spending analysis, '
-                f'AI recommendations, and savings forecast.</p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+        with btn_c1:
+            if st.button("🔄 Update Report", use_container_width=True, key="rpt_update"):
+                with st.spinner("🤖 Re-running AI analysis…"):
+                    _trigger_ai_analysis()
+                with st.spinner("📄 Building updated report…"):
+                    try:
+                        new_path, new_data = _build_report(uname, income, savings, goal_amt)
+                        st.session_state.cached_report_path = new_path
+                        st.session_state.cached_report_data = new_data
+                        st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
+                        st.session_state.report_needs_regen = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to generate report: {e}")
 
-            btn_col1, btn_col2 = st.columns(2)
-
-            # Update report
-            with btn_col1:
-                if st.button("🔄 Update Report", use_container_width=True, key="rpt_update"):
-                    with st.spinner("🤖 Generating AI analysis for updated report…"):
+        with btn_c2:
+            rpt_dl_path = st.session_state.cached_report_path
+            if rpt_dl_path and os.path.exists(rpt_dl_path):
+                with open(rpt_dl_path, "rb") as f_pdf:
+                    st.download_button(
+                        "⬇️ Download PDF Report",
+                        data=f_pdf,
+                        file_name=f"{uname}_financial_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key="rpt_download",
+                    )
+            else:
+                # No PDF yet — generate on first click
+                if st.button("🖨️ Generate Report Now", use_container_width=True, key="rpt_gen_first"):
+                    with st.spinner("🤖 Generating AI analysis…"):
                         _trigger_ai_analysis()
-                    with st.spinner("📄 Building updated PDF…"):
+                    with st.spinner("📄 Building report…"):
                         try:
-                            new_path = _build_report(uname, income, savings, goal_amt)
+                            new_path, new_data = _build_report(uname, income, savings, goal_amt)
                             st.session_state.cached_report_path = new_path
+                            st.session_state.cached_report_data = new_data
                             st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
                             st.session_state.report_needs_regen = False
-                            st.success("✅ Report updated! Click **Download PDF Report** to save it.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to generate report: {e}")
 
-            # Download existing (or just-updated) report
-            with btn_col2:
-                rpt_path_to_dl = st.session_state.cached_report_path
-                if rpt_path_to_dl and os.path.exists(rpt_path_to_dl):
-                    with open(rpt_path_to_dl, "rb") as f:
-                        st.download_button(
-                            "⬇️ Download PDF Report",
-                            data=f,
-                            file_name=f"{uname}_financial_report.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                            key="rpt_download",
-                        )
+        # ── Inline report display ─────────────────────────────────────────
+        rd = st.session_state.cached_report_data
 
-        else:
-            # No cached report yet (edge case: user skipped onboarding auto-gen)
+        if rd:
+            st.markdown("---")
+
+            # Header
             st.markdown(
-                '<div class="report-card">'
-                '<h4>📋 No Report Generated Yet</h4>'
-                '<p>Generate your first AI financial report below.</p>'
-                '</div>',
+                f'<div style="background:linear-gradient(135deg,#0C1A2E,#0F2040);'
+                f'border:1px solid #1E3A5C;border-radius:16px;padding:24px 28px;margin-bottom:20px">'
+                f'<h2 style="color:#60A5FA;margin:0 0 4px;font-size:1.5rem">💰 Financial AI Agent Report</h2>'
+                f'<p style="color:#4A5568;font-size:.85rem;margin:0">'
+                f'Prepared for <strong style="color:#94A3B8">{uname}</strong> &nbsp;·&nbsp; '
+                f'Generated: <strong style="color:#60A5FA">{rd["generated_at"]}</strong></p>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
-            if st.button("🖨️ Generate PDF Report Now", use_container_width=True, key="rpt_gen_new"):
-                with st.spinner("🤖 Generating AI analysis…"):
-                    _trigger_ai_analysis()
-                with st.spinner("📄 Building PDF…"):
-                    try:
-                        pdf_path_new = _build_report(uname, income, savings, goal_amt)
-                        st.session_state.cached_report_path = pdf_path_new
-                        st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
-                        st.session_state.report_needs_regen = False
-                        st.success("✅ Report ready!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to generate report: {e}")
+
+            # ── 1. Financial Summary ──────────────────────────────────────
+            shdr("📌 Financial Summary")
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Monthly Income",  pesos(rd["income"]))
+            r2.metric("Total Spending",  pesos(rd["spending"]))
+            r3.metric("Remaining",       pesos(rd["remaining"]))
+            r4.metric("Current Savings", pesos(rd["savings"]))
+
+            if rd.get("active_goal"):
+                ag = rd["active_goal"]
+                prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
+                st.markdown(
+                    f'<div style="background:#0C1422;border:1px solid #1E3A5C;border-radius:10px;'
+                    f'padding:14px 18px;margin:12px 0">'
+                    f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
+                    f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
+                    f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
+                    f'<div style="background:#1E2A3A;border-radius:4px;height:8px;overflow:hidden">'
+                    f'  <div style="width:{prog_pct*100:.1f}%;height:8px;'
+                    f'background:linear-gradient(90deg,#2563EB,#60A5FA);border-radius:4px"></div>'
+                    f'</div>'
+                    f'<p style="color:#60A5FA;font-size:.75rem;font-weight:700;margin:4px 0 0">'
+                    f'{pesos(rd["savings"])} saved &nbsp;·&nbsp; {prog_pct*100:.0f}% complete</p>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── 2. Health Score ───────────────────────────────────────────
+            st.markdown("---")
+            shdr("💡 Financial Health Score")
+            ai_badge()
+            score_col = "#22C55E" if rd["score"] >= 80 else "#F59E0B" if rd["score"] >= 60 else "#EF4444"
+            sc1, sc2 = st.columns([1, 2])
+            with sc1:
+                st.markdown(
+                    f'<div style="margin:10px 0">'
+                    f'<span class="score-badge">{rd["score"]}/100</span></div>'
+                    f'<p style="color:{score_col};font-weight:700;font-size:1rem">{rd["level"]}</p>',
+                    unsafe_allow_html=True,
+                )
+            with sc2:
+                fig_rpt_g = go.Figure(go.Indicator(
+                    mode="gauge+number", value=rd["score"],
+                    number={"suffix": "/100", "font": {"color": "#E2E8F0", "size": 22}},
+                    domain={"x": [0, 1], "y": [0, 1]},
+                    gauge={
+                        "axis": {"range": [0, 100], "tickcolor": "#2D3B55",
+                                 "tickfont": {"color": "#64748B"}},
+                        "bar": {"color": score_col, "thickness": 0.28},
+                        "bgcolor": "#131B2E", "bordercolor": "#1E2A3A",
+                        "steps": [
+                            {"range": [0, 40],  "color": "#1C0808"},
+                            {"range": [40, 60], "color": "#1C1507"},
+                            {"range": [60, 80], "color": "#052E16"},
+                            {"range": [80, 100],"color": "#0C1A2E"},
+                        ],
+                    },
+                ))
+                fig_rpt_g.update_layout(
+                    height=180, margin=dict(t=10, b=0, l=10, r=10),
+                    paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#94A3B8"),
+                )
+                st.plotly_chart(fig_rpt_g, use_container_width=True)
+
+            # ── 3. Spending Alerts ────────────────────────────────────────
+            st.markdown("---")
+            shdr("🚨 Spending Alerts")
+            if rd.get("alerts"):
+                for alert in rd["alerts"]:
+                    if "🚨" in alert or "⚠" in alert:
+                        st.warning(alert)
+                    else:
+                        st.info(alert)
+            else:
+                st.success("✅ No spending risks detected.")
+
+            # ── 4. AI Financial Analysis ──────────────────────────────────
+            st.markdown("---")
+            shdr("🤖 AI Financial Analysis")
+            ai_badge()
+            if rd.get("advice"):
+                st.markdown(
+                    f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
+                    f'padding:16px 20px;color:#CBD5E0;font-size:.88rem;line-height:1.7">'
+                    f'{rd["advice"].replace(chr(10), "<br/>")}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── 5. Smart Recommendations ──────────────────────────────────
+            st.markdown("---")
+            shdr("💡 Smart Recommendations")
+            if rd.get("recommendations"):
+                for rec in rd["recommendations"]:
+                    st.info(rec)
+            else:
+                st.info("Log more data to receive personalised recommendations.")
+
+            st.markdown(
+                '<p style="color:#2D3B55;font-size:.75rem;text-align:center;margin-top:24px">'
+                'Generated by Financial AI Agent · For personal reference only.</p>',
+                unsafe_allow_html=True,
+            )
+
+        elif not st.session_state.cached_report_path:
+            st.markdown("---")
+            st.info("📋 No report yet. Click **🖨️ Generate Report Now** above to create your first one.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 6 — SETTINGS

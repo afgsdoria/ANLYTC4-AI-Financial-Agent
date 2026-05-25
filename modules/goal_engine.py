@@ -69,22 +69,18 @@ _MONTH_PAT = (
 # ── Regex helpers ─────────────────────────────────────────────────────────────
 
 def _regex_amount(text: str) -> float:
-    """₱50,000 / P50000 / 50000 / 50,000"""
-    # Try explicit peso prefix first
     m = re.search(r"[₱Pp]\s?([\d,]+(?:\.\d+)?)", text)
     if m:
         try:
             return float(m.group(1).replace(",", ""))
         except ValueError:
             pass
-    # Bare number with comma thousands separator (≥ 3 digits)
     m = re.search(r"\b([\d]{1,3}(?:,[\d]{3})+(?:\.\d+)?)\b", text)
     if m:
         try:
             return float(m.group(1).replace(",", ""))
         except ValueError:
             pass
-    # Plain number ≥ 4 digits
     m = re.search(r"\b(\d{4,}(?:\.\d+)?)\b", text)
     if m:
         try:
@@ -95,7 +91,6 @@ def _regex_amount(text: str) -> float:
 
 
 def _keyword_amount(text_lower: str) -> float:
-    # Longer keywords first to avoid partial matches
     for kw in sorted(_AMOUNT_HINTS.keys(), key=len, reverse=True):
         if kw in text_lower:
             return float(_AMOUNT_HINTS[kw])
@@ -128,39 +123,31 @@ def _regex_goal_name(text_lower: str) -> str:
 
 
 def _regex_deadline(text_lower: str, today: datetime) -> str | None:
-    # "in/within X months"
     m = re.search(r"(?:in|within)\s+(\d+)\s+month", text_lower)
     if m:
         return (today + relativedelta(months=int(m.group(1)))).strftime("%Y-%m-%d")
-    # "in/within X weeks"
     m = re.search(r"(?:in|within)\s+(\d+)\s+week", text_lower)
     if m:
         return (today + relativedelta(weeks=int(m.group(1)))).strftime("%Y-%m-%d")
-    # "in/within X years"
     m = re.search(r"(?:in|within)\s+(\d+)\s+year", text_lower)
     if m:
         return (today + relativedelta(years=int(m.group(1)))).strftime("%Y-%m-%d")
-    # "next year" / "next month"
     if "next year"  in text_lower:
         return (today + relativedelta(years=1)).strftime("%Y-%m-%d")
     if "next month" in text_lower:
         return (today + relativedelta(months=1)).strftime("%Y-%m-%d")
-    # "by/before/until January 2027"
     m = re.search(rf"(?:by|before|until|on|end of)\s+({_MONTH_PAT})\s+(\d{{4}})", text_lower)
     if m:
         mon = _MONTH_MAP.get(m.group(1).lower()[:3], "01")
         return f"{m.group(2)}-{mon}-01"
-    # "by December" (no year)
     m = re.search(rf"(?:by|before|until|end of)\s+({_MONTH_PAT})\b", text_lower)
     if m:
         mon_num = int(_MONTH_MAP.get(m.group(1).lower()[:3], "01"))
         yr = today.year + (1 if mon_num <= today.month else 0)
         return f"{yr}-{mon_num:02d}-01"
-    # ISO date
     m = re.search(r"(\d{4}-\d{2}-\d{2})", text_lower)
     if m:
         return m.group(1)
-    # "end of 2027"
     m = re.search(r"end of\s+(\d{4})", text_lower)
     if m:
         return f"{m.group(1)}-12-31"
@@ -168,7 +155,6 @@ def _regex_deadline(text_lower: str, today: datetime) -> str | None:
 
 
 def _estimate_deadline(target_amount: float, monthly_income: float, today: datetime) -> str:
-    """Estimate deadline using 20% savings rate. Minimum 1 month."""
     if monthly_income > 0 and target_amount > 0:
         months = max(1, round(target_amount / (monthly_income * 0.20)))
     else:
@@ -227,11 +213,10 @@ Return ONLY valid JSON, no markdown fences:
         target_amount = float(data.get("target_amount", 0) or 0)
         deadline      = str(data.get("deadline", "") or "").strip()
 
-        # Validate deadline
         if deadline:
             try:
                 dl_dt = datetime.strptime(deadline, "%Y-%m-%d")
-                if dl_dt <= today:          # never return a past date
+                if dl_dt <= today:
                     deadline = ""
             except ValueError:
                 deadline = ""
@@ -256,15 +241,12 @@ def extract_goal_from_text(text: str, monthly_income: float = 0.0) -> dict:
     """
     today = datetime.today()
 
-    # ── 1. AI parser ─────────────────────────────────────────────────────────
     ai = _ai_parse(text, monthly_income, today)
     if ai:
-        # Fill any zero amount using keyword hints as a safety net
         if ai["target_amount"] == 0:
             ai["target_amount"] = _keyword_amount(text.lower()) or _regex_amount(text) or 20_000
         return ai
 
-    # ── 2. Regex fallback ─────────────────────────────────────────────────────
     t_lower = text.lower()
     amount  = _regex_amount(text) or _keyword_amount(t_lower) or 20_000
     name    = _regex_goal_name(t_lower)

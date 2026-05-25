@@ -78,7 +78,7 @@ def create_tables():
     );
     """)
 
-    # ── Safe migrations (no datetime() default) ────────────
+    # ── Safe migrations ────────────────────────────────
     def _add_col(table, col, typedef):
         c.execute(f"PRAGMA table_info({table})")
         existing = [r[1] for r in c.fetchall()]
@@ -302,13 +302,13 @@ def set_active_goal(username, goal_id):
     conn.close()
 
 
-def toggle_goal_active(goal_id, username):
-    """Flip is_active for one goal without touching others (multi-goal support)."""
+def toggle_goal_active(username: str, goal_id: int, make_active: bool):
+    """Activate or deactivate a single goal without touching others (multi-goal support)."""
     conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "UPDATE goals SET is_active = CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=? AND username=?",
-        (goal_id, username)
+        "UPDATE goals SET is_active = ? WHERE id = ? AND username = ?",
+        (1 if make_active else 0, goal_id, username)
     )
     conn.commit()
     conn.close()
@@ -393,34 +393,3 @@ def get_latest_ai_analysis(username):
     row = c.fetchone()
     conn.close()
     return (row[0], row[1]) if row else (None, None)
-
-
-# ─────────────────────────────────────────────────────────
-# MULTIPLE ACTIVE GOALS  (toggle instead of exclusive-set)
-# ─────────────────────────────────────────────────────────
-
-def toggle_goal_active(username: str, goal_id: int, make_active: bool):
-    """Activate or deactivate a single goal without touching others."""
-    conn = connect_db()
-    c = conn.cursor()
-    c.execute(
-        "UPDATE goals SET is_active = ? WHERE id = ? AND username = ?",
-        (1 if make_active else 0, goal_id, username)
-    )
-    conn.commit()
-    conn.close()
-
-
-def get_active_goals(username: str) -> list[dict]:
-    """Return ALL currently active goals for the user."""
-    conn = connect_db()
-    c = conn.cursor()
-    c.execute(
-        "SELECT id, goal_name, target_amount, deadline FROM goals "
-        "WHERE username = ? AND is_active = 1 ORDER BY id ASC",
-        (username,)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return [{"id": r[0], "goal_name": r[1],
-             "target_amount": r[2], "deadline": r[3]} for r in rows]

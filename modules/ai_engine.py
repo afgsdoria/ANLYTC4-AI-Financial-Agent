@@ -45,7 +45,7 @@ def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. AGENTIC FULL ANALYSIS  (reasoning engine + decision rules + planning)
 #    Returns JSON with keys: health_summary, spending_habits, risk_flags,
-#    step_plan, chart_insights, forecast_narrative
+#    step_plan, chart_insights, forecast_narrative, chart_data
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_full_agent_analysis(
@@ -59,6 +59,7 @@ def run_full_agent_analysis(
       Step 2 — Identify spending patterns & risks
       Step 3 — Build a concrete step-by-step plan
       Step 4 — Generate chart narrative & forecast commentary
+      Step 5 — Generate structured chart data for AI-driven visualization
     Returns a structured dict for the dashboard.
     """
     exp_lines = "\n".join(
@@ -84,7 +85,8 @@ def run_full_agent_analysis(
     system = (
         "You are an autonomous AI financial planning agent for Filipinos. "
         "You reason step-by-step, apply financial decision rules, and produce "
-        "a concrete multi-step action plan. Always respond in valid JSON only."
+        "a concrete multi-step action plan. You also generate structured chart data "
+        "for AI-driven visualization. Always respond in valid JSON only — no markdown fences."
     )
 
     user_prompt = f"""
@@ -103,10 +105,13 @@ EXPENSES:
 AGENT REASONING STEPS:
 Step 1 — Health Assessment: Evaluate income vs spending vs savings ratio.
 Step 2 — Spending Pattern Analysis: Identify top categories, risks, anomalies.
-Step 3 — Goal Planning: Build a numbered, week-by-week or month-by-month action plan to reach the active goal.
+Step 3 — Goal Planning: Build a numbered, week-by-week or month-by-month action plan.
 Step 4 — Chart Narrative: Describe what the spending chart and forecast chart reveal.
+Step 5 — Chart Data Generation: Produce structured category/amount pairs from the expenses
+          for AI-generated visualization. If no expenses, generate realistic estimated
+          budget allocations based on the user's income, user type, and Philippine cost of living.
 
-Return ONLY this JSON (no markdown fences):
+Return ONLY this JSON (no markdown fences, no extra text):
 {{
   "health_summary": "2-3 sentence financial health assessment",
   "spending_habits": "2-3 sentences on spending patterns and top categories",
@@ -118,29 +123,65 @@ Return ONLY this JSON (no markdown fences):
     {{"step": 4, "action": "...", "timeline": "...", "amount": "..."}},
     {{"step": 5, "action": "...", "timeline": "...", "amount": "..."}}
   ],
-  "chart_insights": "What the spending breakdown chart reveals",
-  "forecast_narrative": "What the 12-month savings forecast means for the user",
+  "chart_insights": "What the spending breakdown chart reveals (1-2 sentences)",
+  "forecast_narrative": "What the 12-month savings forecast means for the user (1-2 sentences)",
   "recommended_monthly_savings": 0,
   "months_to_goal": 0,
-  "weekly_budget": 0
+  "weekly_budget": 0,
+  "chart_data": {{
+    "categories": ["Food", "Transportation", "Bills", "Entertainment", "Savings", "Other"],
+    "amounts": [0, 0, 0, 0, 0, 0],
+    "insight": "One sentence insight on the most notable category"
+  }}
 }}
 """
-    raw = _chat(system, user_prompt, temperature=0.4, max_tokens=2000)
+    raw = _chat(system, user_prompt, temperature=0.4, max_tokens=2200)
 
     # Strip markdown fences if model adds them
     raw = raw.strip()
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else raw
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
 
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
+        # Validate chart_data structure
+        cd = result.get("chart_data", {})
+        cats = cd.get("categories", [])
+        amts = cd.get("amounts", [])
+        if not cats or not amts or len(cats) != len(amts):
+            # Build from raw expenses as fallback
+            if expenses:
+                from collections import defaultdict
+                cat_totals = defaultdict(float)
+                for c, a, _ in expenses:
+                    cat_totals[c] += a
+                result["chart_data"] = {
+                    "categories": list(cat_totals.keys()),
+                    "amounts": list(cat_totals.values()),
+                    "insight": "Chart built from your logged expense data.",
+                }
+            else:
+                result["chart_data"] = {}
+        return result
     except Exception:
         # Fallback so the app never crashes
+        fallback_chart = {}
+        if expenses:
+            from collections import defaultdict
+            cat_totals = defaultdict(float)
+            for c, a, _ in expenses:
+                cat_totals[c] += a
+            fallback_chart = {
+                "categories": list(cat_totals.keys()),
+                "amounts": list(cat_totals.values()),
+                "insight": "Chart from expense data.",
+            }
         return {
-            "health_summary": raw[:300],
+            "health_summary": raw[:300] if raw else "Analysis pending.",
             "spending_habits": "Unable to parse spending analysis.",
             "risk_flags": [],
             "step_plan": [],
@@ -149,11 +190,68 @@ Return ONLY this JSON (no markdown fences):
             "recommended_monthly_savings": max(0, remaining),
             "months_to_goal": 0,
             "weekly_budget": max(0, remaining / 4.33),
+            "chart_data": fallback_chart,
         }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. FINANCIAL ADVICE (for PDF report)
+# 2. AI CHART DATA GENERATOR (standalone — for dashboard refresh)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def generate_ai_charts(
+    expenses: list,
+    income: float,
+    user_type: str,
+) -> dict:
+    """
+    Generate AI-structured chart data from expenses.
+    Falls back to raw aggregation if AI fails.
+    """
+    if not expenses:
+        return {}
+
+    from collections import defaultdict
+    cat_totals = defaultdict(float)
+    for c, a, _ in expenses:
+        cat_totals[c] += a
+
+    system = (
+        "You are a financial data analyst. Given expense data, "
+        "return structured JSON for chart visualization. No markdown fences."
+    )
+    lines = "\n".join(f"  {c}: ₱{a:,.2f}" for c, a in cat_totals.items())
+    prompt = f"""
+User Type: {user_type}
+Monthly Income: ₱{income:,.2f}
+Expense totals:
+{lines}
+
+Return ONLY this JSON:
+{{
+  "categories": [...],
+  "amounts": [...],
+  "insight": "One insight sentence about spending distribution"
+}}
+"""
+    raw = _chat(system, prompt, temperature=0.2, max_tokens=400)
+    raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    try:
+        data = json.loads(raw)
+        if len(data.get("categories", [])) == len(data.get("amounts", [])):
+            return data
+    except Exception:
+        pass
+
+    # Fallback: plain aggregation
+    return {
+        "categories": list(cat_totals.keys()),
+        "amounts": list(cat_totals.values()),
+        "insight": "Chart built from your logged expense data.",
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. FINANCIAL ADVICE (for PDF report)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def generate_financial_advice(
@@ -188,7 +286,7 @@ Use ₱ for peso amounts.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. UPLOADED FILE ANALYSIS
+# 4. UPLOADED FILE ANALYSIS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def analyze_uploaded_financial_file(file_content: str) -> str:
@@ -209,7 +307,7 @@ Under 200 words. Use ₱.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. FORECAST ADVICE
+# 5. FORECAST ADVICE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def generate_forecast_advice(monthly_savings: float, estimated_months) -> str:
@@ -231,7 +329,8 @@ Under 150 words. Use ₱.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. FINANCE-ONLY CHATBOT WITH MEMORY & PERSONALIZATION
+# 6. FINANCE-ONLY CHATBOT WITH MEMORY & PERSONALIZATION
+#    Extended scope: banks, investments, financial products, loans, etc.
 # ══════════════════════════════════════════════════════════════════════════════
 
 def financial_chatbot_with_memory(
@@ -261,19 +360,38 @@ You are Financial AI Agent — a personalized financial coach for Filipinos.
 TODAY: {_today()}
 
 SCOPE RULES:
-- Answer ANY question that could help the user make better financial decisions or reach their goal.
-  This includes: budgeting, savings, expenses, goals, debt, investments, banking products,
-  salary negotiation, side hustles, comparison of financial products (e.g. "Is Maya better than
-  GCash?", "Is MariBank a good savings bank?"), insurance, credit cards, stock market basics,
-  crypto risks, loans, and general money mindset questions.
-- If the user asks something completely unrelated to money or financial well-being
-  (e.g. cooking recipes, sports scores, coding questions), politely redirect:
-  "I'm your finance coach — I can best help with money-related questions.
-   Is there a financial topic I can help you with?"
-- Always personalize answers using the user's actual data below when relevant.
-- Be concise (≤250 words), warm, and practical.
+- Answer ANY question that helps the user make better financial decisions or reach their goal.
+  This includes (but is not limited to):
+  • Budgeting, savings strategies, expense management
+  • Goal planning and progress tracking
+  • Debt management, loan comparisons, interest rates
+  • Philippine banking products: GCash, Maya, MariBank, traditional banks (BPI, BDO, Metrobank, UnionBank, etc.)
+  • Savings accounts, time deposits, UITF, mutual funds, stock market basics (PSE)
+  • Cryptocurrency risks and considerations
+  • Insurance (life, health, property)
+  • Credit cards, buy-now-pay-later services
+  • Side hustles and income-boosting ideas
+  • Salary negotiation tactics
+  • Emergency fund planning
+  • Philippine-specific financial tips (SSS, Pag-IBIG, PhilHealth)
+  • Any comparison of financial products or services (e.g., "Is MariBank better than traditional banks?")
+  • Inflation, cost of living, market prices in the Philippines
+  • Financial literacy concepts
+
+- When asked about specific banks or financial products (e.g., "Is MariBank a good savings bank?"),
+  provide a balanced, helpful comparison including interest rates, pros, cons, and a personalized
+  recommendation based on the user's profile and goals.
+
+- If the user asks something COMPLETELY unrelated to money, finances, or economic well-being
+  (e.g., cooking recipes, sports scores, coding questions unrelated to finance),
+  politely redirect: "I'm your finance coach — I can best help with money-related questions.
+  Is there a financial topic I can help you with?"
+
+- Always personalize answers using the user's actual financial data below when relevant.
+- Be concise (≤300 words), warm, practical, and encouraging.
 - Use ₱ for Philippine Peso amounts.
-- Reference the user's specific income, spending, or goal when it adds value.
+- Reference the user's specific income, spending, or goals when it adds value.
+- Cite Philippine-specific context when discussing products, banks, or services.
 
 USER FINANCIAL PROFILE:
 {current_context}
@@ -287,7 +405,7 @@ USER FINANCIAL PROFILE:
         messages.append({"role": "user", "content": user_message})
         r = client.chat.completions.create(
             model="gpt-4o-mini", messages=messages,
-            temperature=0.65, max_tokens=600
+            temperature=0.65, max_tokens=700
         )
         return r.choices[0].message.content.strip()
     except Exception as e:

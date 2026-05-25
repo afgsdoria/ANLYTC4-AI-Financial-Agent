@@ -2,17 +2,10 @@
 reports.py
 Generates a downloadable PDF financial report using ReportLab.
 """
-
 import os
 from datetime import datetime
-
 from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    HRFlowable,
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable,
 )
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -35,59 +28,29 @@ def generate_financial_report(
     target_amount: float | None = None,
     deadline: str | None = None,
 ) -> str:
-    """Build a PDF report and return the filename."""
-
     os.makedirs("reports", exist_ok=True)
     timestamp = datetime.today().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join("reports", f"{username}_financial_report_{timestamp}.pdf")
-
     doc = SimpleDocTemplate(
-        filename,
-        pagesize=letter,
-        leftMargin=0.75 * inch,
-        rightMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
+        filename, pagesize=letter,
+        leftMargin=0.75*inch, rightMargin=0.75*inch,
+        topMargin=0.75*inch, bottomMargin=0.75*inch,
     )
-
     styles = getSampleStyleSheet()
     accent = colors.HexColor("#1B4F72")
     light_bg = colors.HexColor("#EBF5FB")
-
-    title_style = ParagraphStyle(
-        "ReportTitle",
-        parent=styles["Title"],
-        textColor=accent,
-        fontSize=22,
-        spaceAfter=4,
-    )
-    h2_style = ParagraphStyle(
-        "H2Custom",
-        parent=styles["Heading2"],
-        textColor=accent,
-        fontSize=13,
-        spaceBefore=14,
-        spaceAfter=4,
-    )
+    title_style = ParagraphStyle("ReportTitle", parent=styles["Title"], textColor=accent, fontSize=22, spaceAfter=4)
+    h2_style = ParagraphStyle("H2Custom", parent=styles["Heading2"], textColor=accent, fontSize=13, spaceBefore=14, spaceAfter=4)
     body_style = styles["BodyText"]
-
     elements = []
-
-    # ── Title ──────────────────────────────────────────────
     elements.append(Paragraph("💰 Financial AI Agent Report", title_style))
-    elements.append(
-        Paragraph(
-            f"Prepared for: <b>{username}</b> &nbsp;|&nbsp; "
-            f"Date: {datetime.today().strftime('%B %d, %Y')}",
-            body_style,
-        )
-    )
+    elements.append(Paragraph(
+        f"Prepared for: <b>{username}</b> &nbsp;|&nbsp; Date: {datetime.today().strftime('%B %d, %Y')}",
+        body_style,
+    ))
     elements.append(HRFlowable(width="100%", thickness=1, color=accent))
     elements.append(Spacer(1, 12))
-
-    # ── Financial Summary ──────────────────────────────────
     elements.append(Paragraph("📌 Financial Summary", h2_style))
-
     remaining = monthly_income - total_spending
     summary_data = [
         ["Item", "Amount"],
@@ -98,37 +61,30 @@ def generate_financial_report(
         ["Savings Goal",    f"₱{savings_goal:,.2f}"],
         ["Health Score",    f"{score}/100 — {level}"],
     ]
-
-    tbl = Table(summary_data, colWidths=[3 * inch, 3 * inch])
+    tbl = Table(summary_data, colWidths=[3*inch, 3*inch])
     tbl.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, 0), accent),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BACKGROUND",   (0, 1), (-1, -1), light_bg),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, light_bg]),
-        ("GRID",         (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING",   (0, 0), (-1, -1), 8),
+        ("BACKGROUND",   (0,0),(-1,0), accent),
+        ("TEXTCOLOR",    (0,0),(-1,0), colors.white),
+        ("FONTNAME",     (0,0),(-1,0), "Helvetica-Bold"),
+        ("BACKGROUND",   (0,1),(-1,-1), light_bg),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, light_bg]),
+        ("GRID",         (0,0),(-1,-1), 0.5, colors.lightgrey),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 8),
+        ("TOPPADDING",   (0,0),(-1,-1), 8),
     ]))
     elements.append(tbl)
     elements.append(Spacer(1, 12))
-
-    # ── Active Goal ────────────────────────────────────────
     elements.append(Paragraph("🎯 Active Financial Goal", h2_style))
     if goal_name:
-        elements.append(
-            Paragraph(
-                f"<b>Goal:</b> {goal_name}<br/>"
-                f"<b>Target Amount:</b> ₱{target_amount:,.2f}<br/>"
-                f"<b>Deadline:</b> {deadline}",
-                body_style,
-            )
-        )
+        elements.append(Paragraph(
+            f"<b>Goal:</b> {goal_name}<br/>"
+            f"<b>Target Amount:</b> ₱{target_amount:,.2f}<br/>"
+            f"<b>Deadline:</b> {deadline}",
+            body_style,
+        ))
     else:
         elements.append(Paragraph("No active financial goal set.", body_style))
     elements.append(Spacer(1, 12))
-
-    # ── Spending Alerts ────────────────────────────────────
     elements.append(Paragraph("🚨 Spending Alerts", h2_style))
     if alerts:
         for alert in alerts:
@@ -136,26 +92,14 @@ def generate_financial_report(
     else:
         elements.append(Paragraph("✅ No spending risks detected.", body_style))
     elements.append(Spacer(1, 12))
-
-    # ── Recommendations ────────────────────────────────────
     elements.append(Paragraph("💡 Smart Recommendations", h2_style))
     for rec in recommendations:
         elements.append(Paragraph(f"• {rec}", body_style))
     elements.append(Spacer(1, 12))
-
-    # ── AI Analysis ───────────────────────────────────────
     elements.append(Paragraph("🤖 AI Financial Analysis", h2_style))
     elements.append(Paragraph(advice.replace("\n", "<br/>"), body_style))
     elements.append(Spacer(1, 20))
-
-    # ── Footer ────────────────────────────────────────────
     elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.grey))
-    elements.append(
-        Paragraph(
-            "Generated by Financial AI Agent · For personal reference only.",
-            styles["Italic"],
-        )
-    )
-
+    elements.append(Paragraph("Generated by Financial AI Agent · For personal reference only.", styles["Italic"]))
     doc.build(elements)
     return filename

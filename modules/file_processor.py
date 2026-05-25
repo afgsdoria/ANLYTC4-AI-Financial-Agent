@@ -2,7 +2,6 @@
 file_processor.py
 Extracts text content from various uploaded file types.
 """
-
 import io
 import pandas as pd
 from PyPDF2 import PdfReader
@@ -56,9 +55,7 @@ def process_docx(file) -> str:
 
 
 def process_uploaded_file(uploaded_file) -> str:
-    """Dispatch to the correct reader based on file extension."""
     name = uploaded_file.name.lower()
-
     if name.endswith(".csv"):
         return process_csv(uploaded_file)
     elif name.endswith(".xlsx") or name.endswith(".xls"):

@@ -3,9 +3,17 @@ app.py — Financial AI Agent
 Redesigned user journey:
   Landing → Onboarding wizard (all-in-one) → Auto-dashboard with AI analysis
   Returning users → Sidebar expense/goal logging → AI re-analysis
+
+CHANGES:
+  - Fixed sidebar Active Goal progress bar (correct ratio + cleaner labels)
+  - Moved Savings Forecast into Dashboard tab (after spending charts)
+  - Report tab: auto-generates report for first-time users after onboarding;
+    returning users see their latest report and can Update or Download PDF
+  - Age is now derived from user's birthday input (date_input) — not entered manually
 """
 
 import json
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -83,8 +91,8 @@ p,li,span,label{color:#CBD5E0}
   background:linear-gradient(135deg,#3B82F6,#2563EB) !important;
   color:#fff !important;border:none !important;border-radius:8px !important;
   font-weight:600 !important;width:100%}
-[data-testid="stSidebar"] .stProgress>div>div{background:#3B82F6 !important}
-[data-testid="stSidebar"] .stProgress>div{background:#1E2A3A !important;border-radius:4px}
+[data-testid="stSidebar"] .stProgress>div>div>div{background:#3B82F6 !important}
+[data-testid="stSidebar"] .stProgress>div>div{background:#1E2A3A !important;border-radius:4px}
 
 /* main inputs */
 input,textarea,[data-baseweb="input"] input,.stTextInput input,
@@ -209,6 +217,21 @@ hr{border-color:#1E2A3A !important}
   background:linear-gradient(135deg,#1E1B4B,#312E81);
   border:1px solid #4F46E5;border-radius:20px;
   padding:3px 12px;font-size:.72rem;font-weight:700;color:#A5B4FC;margin-bottom:8px}
+
+/* goal progress in sidebar */
+.goal-prog-wrap{background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;
+  padding:12px 14px;margin-bottom:10px}
+.goal-prog-name{color:#E2E8F0;font-weight:600;font-size:.88rem;margin-bottom:4px}
+.goal-prog-sub{color:#4A5568;font-size:.75rem;margin-bottom:8px}
+.goal-prog-bar-bg{background:#1E2A3A;border-radius:4px;height:8px;width:100%;overflow:hidden}
+.goal-prog-bar-fill{height:8px;border-radius:4px;background:linear-gradient(90deg,#2563EB,#60A5FA)}
+.goal-prog-pct{color:#60A5FA;font-size:.75rem;font-weight:700;margin-top:4px}
+
+/* report card */
+.report-card{background:#0C1422;border:1px solid #1E3A5C;border-radius:14px;
+  padding:20px 24px;margin-bottom:16px}
+.report-card h4{color:#60A5FA;font-weight:700;margin:0 0 8px}
+.report-card p{color:#94A3B8;font-size:.85rem;margin:0}
 </style>
 """, unsafe_allow_html=True)
 
@@ -219,6 +242,11 @@ hr{border-color:#1E2A3A !important}
 def pesos(v): return f"₱{float(v):,.2f}"
 def shdr(t):  st.markdown(f'<div class="shdr">{t}</div>', unsafe_allow_html=True)
 def ai_badge(): st.markdown('<span class="ai-badge">🤖 AI Generated</span>', unsafe_allow_html=True)
+
+def compute_age(bday: date) -> int:
+    """Return full years between bday and today."""
+    today = date.today()
+    return today.year - bday.year - ((today.month, today.day) < (bday.month, bday.day))
 def pcfg():
     return dict(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0D1117",
@@ -236,6 +264,7 @@ DEFAULTS = dict(
     username="",
     user_type="Student",
     age=18,
+    birthday=None,   # stored as "YYYY-MM-DD" string
     monthly_income=0.0,
     savings_goal=0.0,
     current_savings=0.0,
@@ -248,6 +277,10 @@ DEFAULTS = dict(
     sidebar_goal_success=None,
     onboard_report_schedule="monthly",
     onboard_report_date=None,
+    # report state
+    cached_report_path=None,       # path of most recently generated PDF
+    cached_report_ts=None,         # timestamp label of that PDF
+    report_needs_regen=False,      # flag: data changed, suggest refresh
 )
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -257,7 +290,13 @@ for k, v in DEFAULTS.items():
 def _load_user_into_session(udata: dict, username: str):
     st.session_state.username        = username
     st.session_state.user_type       = udata.get("user_type", "Student")
-    st.session_state.age             = udata.get("age", 18) or 18
+    # The DB stores computed age (integer). Birthday is kept in session only.
+    # On login, we restore the stored age; birthday will be re-entered in Settings if needed.
+    stored_age = udata.get("age", 18) or 18
+    st.session_state.age      = stored_age
+    # Don't overwrite birthday if it's already in session (same session re-login)
+    if "birthday" not in st.session_state:
+        st.session_state.birthday = None
     st.session_state.monthly_income  = udata.get("monthly_income", 0.0)
     st.session_state.savings_goal    = udata.get("savings_goal", 0.0)
     st.session_state.current_savings = udata.get("current_savings", 0.0)
@@ -287,6 +326,34 @@ def _trigger_ai_analysis():
     plan_text = json.dumps(result.get("step_plan", []))
     save_ai_analysis(uname, result.get("health_summary",""), plan_text)
     st.session_state.ai_analysis = result
+    # Mark that a new report should be encouraged
+    st.session_state.report_needs_regen = True
+
+
+def _build_report(uname: str, income: float, savings: float, goal_amt: float) -> str:
+    """Generate PDF report and return the file path."""
+    spending_r = get_total_spending(uname)
+    expenses_r = get_expenses(uname)
+    active_r   = get_active_goal(uname)
+    score_r, level_r = calculate_financial_health_score(income, spending_r, savings)
+    alerts_r = generate_spending_alerts(income, spending_r, expenses_r)
+    recs_r   = generate_recommendations(income, spending_r, goal_amt,
+                                         savings, expenses_r, active_r)
+    advice_r = generate_financial_advice(
+        uname, st.session_state.user_type, income, goal_amt,
+        savings, spending_r, expenses_r, active_r,
+    )
+    pdf_path = generate_financial_report(
+        username=uname, advice=advice_r,
+        score=score_r, level=level_r,
+        recommendations=recs_r, alerts=alerts_r,
+        monthly_income=income, total_spending=spending_r,
+        current_savings=savings, savings_goal=goal_amt,
+        goal_name=active_r["goal_name"]        if active_r else None,
+        target_amount=active_r["target_amount"] if active_r else None,
+        deadline=active_r["deadline"]           if active_r else None,
+    )
+    return pdf_path
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -309,7 +376,7 @@ if st.session_state.app_stage == "landing":
         ("📊", "AI-Generated Charts",    "Every chart and insight is generated by the AI reasoning engine — not hard-coded. True agentic visualization."),
         ("🎯", "Smart Goal Planner",     "Describe a goal in plain language. AI extracts amount and deadline using Philippine market prices as reference."),
         ("💬", "Finance-Only Chatbot",   "Personalized AI coach that knows your income, spending, and goals. Covers banks, investments, loans, and more."),
-        ("📄", "Auto PDF Reports",       "Schedule daily, weekly, monthly, or on a custom date — reports auto-generate and are downloadable as PDF."),
+        ("📄", "Auto PDF Reports",       "First-time users get a report instantly. Returning users see their latest report and can update or download anytime."),
         ("📁", "File Upload Analysis",   "Upload your bank statement or expense tracker (max 200 MB) for AI-powered insights and context."),
     ]
     cols = st.columns(3)
@@ -408,7 +475,18 @@ elif st.session_state.app_stage == "onboard":
                 key="ob_user_type",
             )
         with ob_col2:
-            age = st.number_input("Your age", min_value=13, max_value=100, value=22, step=1, key="ob_age")
+            # Default birthday: 22 years ago
+            default_bday = date.today().replace(year=date.today().year - 22)
+            bday_input = st.date_input(
+                "Date of Birth",
+                value=default_bday,
+                min_value=date(1920, 1, 1),
+                max_value=date.today(),
+                key="ob_bday",
+                help="We'll compute your age automatically from this.",
+            )
+            age = compute_age(bday_input)
+            st.caption(f"🎂 Age computed: **{age} years old**")
 
         # ── SECTION 2: Your Finances ──────────────────────────────────────
         st.markdown("#### 💵 Your Finances")
@@ -516,6 +594,7 @@ elif st.session_state.app_stage == "onboard":
         )
         st.session_state.user_type       = user_type
         st.session_state.age             = int(age)
+        st.session_state.birthday        = str(bday_input)
         st.session_state.monthly_income  = monthly_income
         st.session_state.current_savings = current_savings
         st.session_state.savings_goal    = savings_goal_overall
@@ -536,10 +615,23 @@ elif st.session_state.app_stage == "onboard":
             if goals:
                 toggle_goal_active(st.session_state.username, goals[0][0], True)
 
-        # Mark onboarding done & trigger AI
+        # Mark onboarding done & trigger AI analysis
         set_onboarding_done(st.session_state.username)
         with st.spinner("🤖 AI Agent is analyzing your finances and building your personalized dashboard… (this takes ~15 seconds)"):
             _trigger_ai_analysis()
+
+        # ── AUTO-GENERATE first report right after onboarding ────────────
+        uname_ob = st.session_state.username
+        with st.spinner("📄 Generating your first financial report…"):
+            try:
+                pdf_path_ob = _build_report(
+                    uname_ob, monthly_income, current_savings, savings_goal_overall
+                )
+                st.session_state.cached_report_path = pdf_path_ob
+                st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
+                st.session_state.report_needs_regen = False
+            except Exception as e:
+                st.warning(f"Report could not be generated automatically: {e}")
 
         st.session_state.app_stage = "dashboard"
         st.rerun()
@@ -582,28 +674,39 @@ elif st.session_state.app_stage == "dashboard":
     # ── SIDEBAR ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(f"## 💰 Hi, {uname}!")
+        bday_display = f" · 🎂 {st.session_state.birthday}" if st.session_state.get("birthday") else ""
         st.markdown(
             f"<small style='color:#4A5568'>{st.session_state.user_type} · "
-            f"Age {st.session_state.age}</small>",
+            f"Age {st.session_state.age}{bday_display}</small>",
             unsafe_allow_html=True,
         )
         st.markdown("---")
 
-        # Active Goal(s) Progress
+        # ── Active Goal(s) Progress — FIXED ──────────────────────────────
         active_goals_sb = get_active_goals(uname)
         if active_goals_sb:
-            st.markdown(f"### 🎯 Active Goal{'s' if len(active_goals_sb)>1 else ''}")
+            goal_label = "Active Goal" if len(active_goals_sb) == 1 else "Active Goals"
+            st.markdown(f"### 🎯 {goal_label}")
             for ag in active_goals_sb:
-                prog = min(1.0, savings / ag["target_amount"] if ag["target_amount"] > 0 else 0)
+                target = float(ag["target_amount"]) if ag["target_amount"] else 0.0
+                saved  = float(savings)
+                # Clamp progress to [0.0, 1.0]
+                prog   = min(1.0, saved / target) if target > 0 else 0.0
+                pct    = prog * 100
+
+                # Custom HTML progress bar (reliable in sidebar)
+                bar_width = f"{pct:.1f}%"
                 st.markdown(
-                    f"<span style='color:#E2E8F0;font-weight:600'>{ag['goal_name']}</span>",
-                    unsafe_allow_html=True,
-                )
-                st.progress(prog)
-                st.markdown(
-                    f"<small style='color:#60A5FA'>{pesos(savings)} / "
-                    f"{pesos(ag['target_amount'])} ({prog*100:.0f}%)"
-                    f" · 🗓 {ag['deadline']}</small>",
+                    f'<div class="goal-prog-wrap">'
+                    f'  <div class="goal-prog-name">🎯 {ag["goal_name"]}</div>'
+                    f'  <div class="goal-prog-sub">🗓 Deadline: {ag["deadline"]}</div>'
+                    f'  <div class="goal-prog-bar-bg">'
+                    f'    <div class="goal-prog-bar-fill" style="width:{bar_width}"></div>'
+                    f'  </div>'
+                    f'  <div class="goal-prog-pct">'
+                    f'    {pesos(saved)} / {pesos(target)} &nbsp;·&nbsp; {pct:.0f}%'
+                    f'  </div>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
             st.markdown("---")
@@ -618,7 +721,6 @@ elif st.session_state.app_stage == "dashboard":
         )
         exp_amt  = st.number_input("Amount (₱)", min_value=0.01, step=10.0,
                                     format="%.2f", key="sb_amt")
-        # Block future dates
         exp_date = st.date_input(
             "Date",
             value=date.today(),
@@ -628,7 +730,6 @@ elif st.session_state.app_stage == "dashboard":
 
         if st.button("➕ Add Expense", use_container_width=True):
             if exp_amt > 0:
-                # Validate no future date (extra safety check)
                 if exp_date > date.today():
                     st.error("⚠️ You cannot log expenses for future dates.")
                 else:
@@ -689,22 +790,20 @@ elif st.session_state.app_stage == "dashboard":
             st.rerun()
 
     # ── MAIN TABS ─────────────────────────────────────────────────────────────
-    (t_dash, t_plan, t_expenses, t_forecast,
-     t_chat, t_report, t_settings) = st.tabs([
+    (t_dash, t_plan, t_expenses, t_chat, t_report, t_settings) = st.tabs([
         "📊 Dashboard", "🗺️ Action Plan", "💸 Expenses",
-        "🔮 Forecast",  "💬 AI Chat",     "📄 Report",
-        "⚙️ Settings",
+        "💬 AI Chat",   "📄 Report",      "⚙️ Settings",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 1 — DASHBOARD
+    # TAB 1 — DASHBOARD  (includes Forecast section)
     # ══════════════════════════════════════════════════════════════════════════
     with t_dash:
         st.markdown("## 📊 Dashboard")
         st.caption("All insights below are generated by the AI reasoning engine — autonomously updated every time you log data.")
 
         # KPIs
-        k1,k2,k3,k4 = st.columns(4)
+        k1, k2, k3, k4 = st.columns(4)
         k1.metric("Monthly Income",  pesos(income))
         k2.metric("Total Spending",  pesos(spending),
                   f"{spending/income*100:.0f}% of income" if income else None)
@@ -716,8 +815,8 @@ elif st.session_state.app_stage == "dashboard":
 
         # Health Score
         score, level = calculate_financial_health_score(income, spending, savings)
-        score_col = "#22C55E" if score>=80 else "#F59E0B" if score>=60 else "#EF4444"
-        c_sc, c_ga = st.columns([1,2])
+        score_col = "#22C55E" if score >= 80 else "#F59E0B" if score >= 60 else "#EF4444"
+        c_sc, c_ga = st.columns([1, 2])
 
         with c_sc:
             st.markdown("#### 💡 Financial Health Score")
@@ -734,22 +833,22 @@ elif st.session_state.app_stage == "dashboard":
         with c_ga:
             fig_g = go.Figure(go.Indicator(
                 mode="gauge+number", value=score,
-                number={"suffix":"/100","font":{"color":"#E2E8F0","size":26}},
-                domain={"x":[0,1],"y":[0,1]},
+                number={"suffix": "/100", "font": {"color": "#E2E8F0", "size": 26}},
+                domain={"x": [0, 1], "y": [0, 1]},
                 gauge={
-                    "axis":{"range":[0,100],"tickcolor":"#2D3B55","tickfont":{"color":"#64748B"}},
-                    "bar":{"color":score_col,"thickness":0.28},
-                    "bgcolor":"#131B2E","bordercolor":"#1E2A3A",
-                    "steps":[
-                        {"range":[0,40],"color":"#1C0808"},
-                        {"range":[40,60],"color":"#1C1507"},
-                        {"range":[60,80],"color":"#052E16"},
-                        {"range":[80,100],"color":"#0C1A2E"},
+                    "axis": {"range": [0, 100], "tickcolor": "#2D3B55", "tickfont": {"color": "#64748B"}},
+                    "bar": {"color": score_col, "thickness": 0.28},
+                    "bgcolor": "#131B2E", "bordercolor": "#1E2A3A",
+                    "steps": [
+                        {"range": [0, 40],  "color": "#1C0808"},
+                        {"range": [40, 60], "color": "#1C1507"},
+                        {"range": [60, 80], "color": "#052E16"},
+                        {"range": [80, 100],"color": "#0C1A2E"},
                     ],
                 },
             ))
             fig_g.update_layout(
-                height=220, margin=dict(t=20,b=10,l=20,r=20),
+                height=220, margin=dict(t=20, b=10, l=20, r=20),
                 paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#94A3B8"),
             )
             st.plotly_chart(fig_g, use_container_width=True)
@@ -789,15 +888,13 @@ elif st.session_state.app_stage == "dashboard":
         shdr("📈 AI-Generated Spending Breakdown")
         ai_badge()
 
-        # Use AI chart data if available, fall back to raw expenses
-        chart_data = ai.get("chart_data") or {}
+        chart_data    = ai.get("chart_data") or {}
         ai_categories = chart_data.get("categories") or []
         ai_amounts    = chart_data.get("amounts") or []
 
         if expenses:
-            df_e = pd.DataFrame(expenses, columns=["Category","Amount","Date"])
+            df_e = pd.DataFrame(expenses, columns=["Category", "Amount", "Date"])
 
-            # If AI provided chart data, overlay it; otherwise use raw data
             if ai_categories and ai_amounts and len(ai_categories) == len(ai_amounts):
                 df_chart = pd.DataFrame({
                     "Category": ai_categories,
@@ -840,6 +937,43 @@ elif st.session_state.app_stage == "dashboard":
                 st.info(f"🤖 AI Chart Insight: {ai['chart_insights']}")
         else:
             st.info("Log expenses using the sidebar — AI-generated charts will appear here.")
+
+        # ── SAVINGS FORECAST (moved from its own tab) ─────────────────────
+        st.markdown("---")
+        shdr("🔮 Savings Forecast")
+        ai_badge()
+
+        spending_now = get_total_spending(uname)
+        fdf, monthly_sav, est_mo = generate_forecast(income, spending_now, savings, goal_amt)
+
+        f1, f2, f3 = st.columns(3)
+        f1.metric("Monthly Net Savings", pesos(monthly_sav))
+        f2.metric("Months to Goal",
+                  f"{est_mo:.1f}" if est_mo is not None and est_mo > 0 else
+                  ("Goal reached! 🎉" if est_mo == 0.0 else "N/A"))
+        f3.metric("Goal Amount", pesos(goal_amt))
+
+        fig_fc = px.line(fdf, x="Month", y="Projected Savings",
+                          markers=True, color_discrete_sequence=["#3B82F6"])
+        fig_fc.update_traces(line=dict(width=2.5), marker=dict(size=7, color="#60A5FA"))
+        if goal_amt > 0:
+            fig_fc.add_hline(
+                y=goal_amt, line_dash="dash", line_color="#EF4444", line_width=1.5,
+                annotation_text=f"🎯 Goal: {pesos(goal_amt)}",
+                annotation_font_color="#EF4444",
+            )
+        fig_fc.update_layout(height=340, margin=dict(t=30, b=20, l=20, r=20), **pcfg())
+        st.plotly_chart(fig_fc, use_container_width=True)
+
+        if ai.get("forecast_narrative"):
+            st.info(f"🤖 {ai['forecast_narrative']}")
+
+        if st.button("🤖 Get Fresh AI Forecast Advice", key="dash_forecast_btn"):
+            with st.spinner("Generating forecast advice…"):
+                adv = generate_forecast_advice(monthly_sav, est_mo)
+            shdr("AI Forecast Analysis")
+            ai_badge()
+            st.info(adv)
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2 — ACTION PLAN
@@ -911,7 +1045,7 @@ elif st.session_state.app_stage == "dashboard":
             df_all = pd.DataFrame(exps_id, columns=["ID","Category","Amount","Date"])
             total  = df_all["Amount"].sum()
 
-            e1,e2 = st.columns(2)
+            e1, e2 = st.columns(2)
             e1.metric("Total Transactions", len(df_all))
             e2.metric("Total Spent", pesos(total))
             st.markdown("---")
@@ -922,8 +1056,8 @@ elif st.session_state.app_stage == "dashboard":
             )
             df_show = df_all if not cat_filter else df_all[df_all["Category"].isin(cat_filter)]
 
-            h1,h2,h3,h4 = st.columns([2,3,2,1])
-            for col, lbl in zip([h1,h2,h3,h4],["DATE","CATEGORY","AMOUNT",""]):
+            h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
+            for col, lbl in zip([h1,h2,h3,h4], ["DATE","CATEGORY","AMOUNT",""]):
                 col.markdown(
                     f"<span style='color:#60A5FA;font-size:.8rem;font-weight:700'>{lbl}</span>",
                     unsafe_allow_html=True,
@@ -931,7 +1065,7 @@ elif st.session_state.app_stage == "dashboard":
             st.markdown("<hr style='margin:4px 0 6px;border-color:#1E2A3A'>", unsafe_allow_html=True)
 
             for _, row in df_show.iterrows():
-                c1,c2,c3,c4 = st.columns([2,3,2,1])
+                c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
                 c1.markdown(f"<span style='color:#4A5568;font-size:.87rem'>{row['Date']}</span>",
                              unsafe_allow_html=True)
                 c2.markdown(f"<span style='color:#CBD5E0;font-weight:600'>{row['Category']}</span>",
@@ -942,7 +1076,7 @@ elif st.session_state.app_stage == "dashboard":
                     delete_expense(int(row["ID"]))
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
-                    st.success(f"✅ Expense deleted successfully.")
+                    st.success("✅ Expense deleted successfully.")
                     st.rerun()
 
             st.markdown("---")
@@ -961,44 +1095,7 @@ elif st.session_state.app_stage == "dashboard":
             st.info("No expenses yet. Use the sidebar to log your first expense!")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — FORECAST
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_forecast:
-        st.markdown("## 🔮 Savings Forecast")
-        ai_badge()
-
-        spending_now = get_total_spending(uname)
-        fdf, monthly_sav, est_mo = generate_forecast(income, spending_now, savings, goal_amt)
-
-        f1,f2,f3 = st.columns(3)
-        f1.metric("Monthly Net Savings", pesos(monthly_sav))
-        f2.metric("Months to Goal", f"{est_mo:.1f}" if est_mo is not None else "N/A")
-        f3.metric("Goal Amount", pesos(goal_amt))
-
-        fig_fc = px.line(fdf, x="Month", y="Projected Savings",
-                          markers=True, color_discrete_sequence=["#3B82F6"])
-        fig_fc.update_traces(line=dict(width=2.5), marker=dict(size=7, color="#60A5FA"))
-        if goal_amt > 0:
-            fig_fc.add_hline(
-                y=goal_amt, line_dash="dash", line_color="#EF4444", line_width=1.5,
-                annotation_text=f"🎯 Goal: {pesos(goal_amt)}",
-                annotation_font_color="#EF4444",
-            )
-        fig_fc.update_layout(height=340, margin=dict(t=30,b=20,l=20,r=20), **pcfg())
-        st.plotly_chart(fig_fc, use_container_width=True)
-
-        if ai.get("forecast_narrative"):
-            st.info(f"🤖 {ai['forecast_narrative']}")
-
-        if st.button("🤖 Get Fresh AI Forecast Advice"):
-            with st.spinner("Generating forecast advice…"):
-                adv = generate_forecast_advice(monthly_sav, est_mo)
-            shdr("AI Forecast Analysis")
-            ai_badge()
-            st.info(adv)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # TAB 5 — AI CHAT
+    # TAB 4 — AI CHAT
     # ══════════════════════════════════════════════════════════════════════════
     with t_chat:
         st.markdown("## 💬 AI Financial Coach")
@@ -1022,8 +1119,9 @@ elif st.session_state.app_stage == "dashboard":
             with st.chat_message("user"):
                 st.markdown(prompt)
 
+            bday_ctx = f" | Birthday: {st.session_state.birthday}" if st.session_state.get('birthday') else ""
             context = (
-                f"User: {uname} | Type: {st.session_state.user_type} | Age: {st.session_state.age}\n"
+                f"User: {uname} | Type: {st.session_state.user_type} | Age: {st.session_state.age}{bday_ctx}\n"
                 f"Monthly Income: {pesos(income)}\n"
                 f"Current Savings: {pesos(savings)}\n"
                 f"Total Spending: {pesos(get_total_spending(uname))}\n"
@@ -1033,8 +1131,8 @@ elif st.session_state.app_stage == "dashboard":
             history = get_chat_history(uname)
             with st.spinner("Thinking…"):
                 reply = financial_chatbot_with_memory(uname, prompt, history, context, ai)
-            save_chat_message(uname,"user",prompt)
-            save_chat_message(uname,"assistant",reply)
+            save_chat_message(uname, "user", prompt)
+            save_chat_message(uname, "assistant", reply)
             st.session_state.chat_messages.append({"role":"assistant","content":reply})
             with st.chat_message("assistant"):
                 st.markdown(reply)
@@ -1045,68 +1143,120 @@ elif st.session_state.app_stage == "dashboard":
             st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 6 — REPORT
+    # TAB 5 — REPORT
+    # Behaviour:
+    #   • First-time users: report auto-generated during onboarding — show it here.
+    #   • Returning users with a cached report: display report info + Update / Download.
+    #   • Schedule badge always visible.
+    #   • "Update Report" re-generates with latest data.
     # ══════════════════════════════════════════════════════════════════════════
     with t_report:
         st.markdown("## 📄 Financial Report")
-        st.caption("Auto-generates a PDF with your full AI analysis, plan, score, and recommendations.")
 
-        sched = st.session_state.report_schedule
-        rdate_info = f" on **{st.session_state.report_date}**" if sched == "custom date" and st.session_state.report_date else ""
+        # Schedule info
+        sched     = st.session_state.report_schedule
+        rdate_str = st.session_state.report_date
+        rdate_info = f" on **{rdate_str}**" if sched == "custom date" and rdate_str else ""
         st.info(
             f"📅 Your report schedule: **{sched.capitalize()}**{rdate_info} "
             "— you can change this in ⚙️ Settings."
         )
 
-        # Check if today matches the report schedule
+        # Check if today matches scheduled report day
         today_str = str(date.today())
-        should_show_auto = False
+        schedule_matches = False
         if sched == "daily":
-            should_show_auto = True
+            schedule_matches = True
         elif sched == "weekly":
-            should_show_auto = date.today().weekday() == 0  # Monday
+            schedule_matches = date.today().weekday() == 0   # Monday
         elif sched == "monthly":
-            should_show_auto = date.today().day == 1
-        elif sched == "custom date" and st.session_state.report_date == today_str:
-            should_show_auto = True
+            schedule_matches = date.today().day == 1
+        elif sched == "custom date" and rdate_str == today_str:
+            schedule_matches = True
 
-        if should_show_auto:
-            st.success("🎉 Today matches your report schedule! Your report is ready to generate.")
+        if schedule_matches:
+            st.success("🎉 Today matches your report schedule! Your report is ready below.")
 
-        if st.button("🖨️ Generate PDF Report Now"):
-            spending_r = get_total_spending(uname)
-            expenses_r = get_expenses(uname)
-            active_r   = get_active_goal(uname)
-            score_r, level_r = calculate_financial_health_score(income, spending_r, savings)
-            alerts_r = generate_spending_alerts(income, spending_r, expenses_r)
-            recs_r   = generate_recommendations(income, spending_r, goal_amt,
-                                                 savings, expenses_r, active_r)
-            with st.spinner("Generating AI analysis for report…"):
-                advice_r = generate_financial_advice(
-                    uname, st.session_state.user_type, income, goal_amt,
-                    savings, spending_r, expenses_r, active_r,
-                )
-            with st.spinner("Building PDF…"):
-                pdf_path = generate_financial_report(
-                    username=uname, advice=advice_r,
-                    score=score_r, level=level_r,
-                    recommendations=recs_r, alerts=alerts_r,
-                    monthly_income=income, total_spending=spending_r,
-                    current_savings=savings, savings_goal=goal_amt,
-                    goal_name=active_r["goal_name"]     if active_r else None,
-                    target_amount=active_r["target_amount"] if active_r else None,
-                    deadline=active_r["deadline"]       if active_r else None,
-                )
-            with open(pdf_path,"rb") as f:
-                st.download_button(
-                    "⬇️ Download PDF Report", data=f,
-                    file_name=f"{uname}_financial_report.pdf",
-                    mime="application/pdf", use_container_width=True,
-                )
-            st.success("✅ Report ready! Click above to download.")
+        # Stale-data warning
+        if st.session_state.report_needs_regen and st.session_state.cached_report_path:
+            st.warning(
+                "⚠️ Your financial data has changed since the last report was generated. "
+                "Click **Update Report** to refresh it with the latest figures."
+            )
+
+        cached_path = st.session_state.cached_report_path
+        cached_ts   = st.session_state.cached_report_ts
+
+        # ── Show existing report if available ────────────────────────────
+        if cached_path and os.path.exists(cached_path):
+            st.markdown(
+                f'<div class="report-card">'
+                f'<h4>📋 Latest Report</h4>'
+                f'<p>Generated: <strong style="color:#60A5FA">{cached_ts or "—"}</strong></p>'
+                f'<p style="margin-top:6px;color:#64748B;font-size:.8rem">'
+                f'This report includes your financial health score, spending analysis, '
+                f'AI recommendations, and savings forecast.</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            btn_col1, btn_col2 = st.columns(2)
+
+            # Update report
+            with btn_col1:
+                if st.button("🔄 Update Report", use_container_width=True, key="rpt_update"):
+                    with st.spinner("🤖 Generating AI analysis for updated report…"):
+                        _trigger_ai_analysis()
+                    with st.spinner("📄 Building updated PDF…"):
+                        try:
+                            new_path = _build_report(uname, income, savings, goal_amt)
+                            st.session_state.cached_report_path = new_path
+                            st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
+                            st.session_state.report_needs_regen = False
+                            st.success("✅ Report updated! Click **Download PDF Report** to save it.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to generate report: {e}")
+
+            # Download existing (or just-updated) report
+            with btn_col2:
+                rpt_path_to_dl = st.session_state.cached_report_path
+                if rpt_path_to_dl and os.path.exists(rpt_path_to_dl):
+                    with open(rpt_path_to_dl, "rb") as f:
+                        st.download_button(
+                            "⬇️ Download PDF Report",
+                            data=f,
+                            file_name=f"{uname}_financial_report.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                            key="rpt_download",
+                        )
+
+        else:
+            # No cached report yet (edge case: user skipped onboarding auto-gen)
+            st.markdown(
+                '<div class="report-card">'
+                '<h4>📋 No Report Generated Yet</h4>'
+                '<p>Generate your first AI financial report below.</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("🖨️ Generate PDF Report Now", use_container_width=True, key="rpt_gen_new"):
+                with st.spinner("🤖 Generating AI analysis…"):
+                    _trigger_ai_analysis()
+                with st.spinner("📄 Building PDF…"):
+                    try:
+                        pdf_path_new = _build_report(uname, income, savings, goal_amt)
+                        st.session_state.cached_report_path = pdf_path_new
+                        st.session_state.cached_report_ts   = datetime.now().strftime("%B %d, %Y %I:%M %p")
+                        st.session_state.report_needs_regen = False
+                        st.success("✅ Report ready!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to generate report: {e}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 7 — SETTINGS
+    # TAB 6 — SETTINGS
     # ══════════════════════════════════════════════════════════════════════════
     with t_settings:
         st.markdown("## ⚙️ Settings")
@@ -1119,8 +1269,25 @@ elif st.session_state.app_stage == "dashboard":
             u_type = st.selectbox("User Type", opts,
                                    index=opts.index(st.session_state.user_type)
                                    if st.session_state.user_type in opts else 0)
-            u_age  = st.number_input("Age", min_value=13, max_value=100,
-                                      value=int(st.session_state.age), step=1)
+            # Birthday → auto-compute age
+            current_bday_str = st.session_state.get("birthday")
+            if current_bday_str:
+                try:
+                    current_bday_val = datetime.strptime(current_bday_str, "%Y-%m-%d").date()
+                except Exception:
+                    current_bday_val = date.today().replace(year=date.today().year - 22)
+            else:
+                current_bday_val = date.today().replace(year=date.today().year - int(st.session_state.age))
+            u_bday = st.date_input(
+                "Date of Birth",
+                value=current_bday_val,
+                min_value=date(1920, 1, 1),
+                max_value=date.today(),
+                key="set_bday",
+                help="Your age is computed automatically from this date.",
+            )
+            u_age  = compute_age(u_bday)
+            st.caption(f"🎂 Age computed: **{u_age} years old**")
             u_inc  = st.number_input("Monthly Income (₱)", min_value=0.0,
                                       value=float(income), step=500.0, format="%.2f")
             u_sav  = st.number_input("Current Savings (₱)", min_value=0.0,
@@ -1134,6 +1301,7 @@ elif st.session_state.app_stage == "dashboard":
                           st.session_state.file_context, 1)
                 st.session_state.user_type       = u_type
                 st.session_state.age             = int(u_age)
+                st.session_state.birthday        = str(u_bday)
                 st.session_state.monthly_income  = u_inc
                 st.session_state.current_savings = u_sav
                 st.session_state.savings_goal    = u_goal
@@ -1144,7 +1312,7 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
 
-        # Report schedule — reactive custom date picker
+        # Report schedule
         shdr("📅 Report Schedule")
         st.caption("Set how often you want your PDF report automatically generated.")
         sched_opts = ["daily","weekly","monthly","custom date"]
@@ -1173,7 +1341,7 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
 
-        # Goals manager — multiple active goals
+        # Goals manager
         shdr("🎯 Manage Goals")
         st.caption("You can activate **multiple goals simultaneously**. Toggle each independently.")
         all_goals = get_goals(uname)
@@ -1226,7 +1394,8 @@ elif st.session_state.app_stage == "dashboard":
         rows = [
             ("👤 Username",        uname),
             ("🏷️ User Type",       st.session_state.user_type),
-            ("🎂 Age",             str(st.session_state.age)),
+            ("🎂 Birthday",        st.session_state.birthday if st.session_state.get("birthday") else "—"),
+            ("🔢 Age",             f"{st.session_state.age} years old"),
             ("💵 Monthly Income",  pesos(income)),
             ("🎯 Savings Target",  pesos(goal_amt)),
             ("🏦 Current Savings", pesos(savings)),
@@ -1237,7 +1406,7 @@ elif st.session_state.app_stage == "dashboard":
             f'<span class="profile-label">{lb}</span>'
             f'<span class="profile-value">{vl}</span>'
             f'</div>'
-            for lb,vl in rows
+            for lb, vl in rows
         )
         st.markdown(
             f'<div class="profile-card"><h4>Profile</h4>{rows_html}</div>',

@@ -24,10 +24,32 @@ def generate_recommendations(
         recs.append(f"📅 Suggested weekly budget from remaining balance: ₱{weekly:,.2f}")
     else:
         recs.append(f"🛑 You have no remaining balance. Aim to cut at least ₱{abs(net):,.2f} in spending this month.")
-    needs   = monthly_income * 0.50
-    wants   = monthly_income * 0.30
-    savings = monthly_income * 0.20
-    recs.append(f"🔢 50/30/20 guide — Needs: ₱{needs:,.2f} | Wants: ₱{wants:,.2f} | Savings: ₱{savings:,.2f}")
+    label_lookup = {
+        "Food": "Needs",
+        "Bills": "Needs",
+        "Transportation": "Needs",
+        "Health": "Needs",
+        "Savings": "Savings",
+        "Entertainment": "Wants",
+        "Shopping": "Wants",
+        "Other": "Wants",
+    }
+    section_totals: dict[str, float] = {"Needs": 0.0, "Wants": 0.0, "Savings": 0.0}
+    if expenses:
+        for category, amount, _ in expenses:
+            section = label_lookup.get(category, "Wants")
+            section_totals[section] += amount
+        portions = []
+        for section in ["Needs", "Wants", "Savings"]:
+            portion = section_totals[section] / monthly_income
+            portions.append(f"{section}: {portion*100:.0f}%")
+        recs.append(
+            "🔢 Personalized spending breakdown — " + ", ".join(portions)
+        )
+    else:
+        recs.append(
+            "🔢 Personalised budget suggestion: focus your spending on needs first, then wants, and grow savings based on your income and goals."
+        )
     if expenses:
         cat_totals: dict[str, float] = defaultdict(float)
         for cat, amt, _ in expenses:

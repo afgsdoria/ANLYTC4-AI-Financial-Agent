@@ -59,6 +59,7 @@ def create_tables():
         target_amount REAL DEFAULT 0,
         deadline      TEXT,
         is_active     INTEGER DEFAULT 0,
+        is_achieved   INTEGER DEFAULT 0,
         created_at    TEXT DEFAULT NULL
     );
 
@@ -93,6 +94,7 @@ def create_tables():
     _add_col("users", "file_context",    "TEXT DEFAULT NULL")
     _add_col("users", "onboarding_done", "INTEGER DEFAULT 0")
     _add_col("goals", "created_at",      "TEXT DEFAULT NULL")
+    _add_col("goals", "is_achieved",    "INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -248,7 +250,7 @@ def save_goal(username, goal_name, target_amount, deadline):
     conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO goals (username,goal_name,target_amount,deadline,is_active) VALUES (?,?,?,?,0)",
+        "INSERT INTO goals (username,goal_name,target_amount,deadline,is_active,is_achieved) VALUES (?,?,?,?,0,0)",
         (username, goal_name, float(target_amount), deadline)
     )
     conn.commit()
@@ -259,7 +261,7 @@ def get_goals(username):
     conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "SELECT id,goal_name,target_amount,deadline,is_active FROM goals WHERE username=? ORDER BY id DESC",
+        "SELECT id,goal_name,target_amount,deadline,is_active,is_achieved FROM goals WHERE username=? ORDER BY id DESC",
         (username,)
     )
     rows = c.fetchall()
@@ -272,7 +274,7 @@ def get_active_goal(username):
     conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "SELECT id,goal_name,target_amount,deadline FROM goals WHERE username=? AND is_active=1 LIMIT 1",
+        "SELECT id,goal_name,target_amount,deadline FROM goals WHERE username=? AND is_active=1 AND is_achieved=0 LIMIT 1",
         (username,)
     )
     row = c.fetchone()
@@ -287,7 +289,7 @@ def get_active_goals(username):
     conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "SELECT id,goal_name,target_amount,deadline FROM goals WHERE username=? AND is_active=1 ORDER BY id ASC",
+        "SELECT id,goal_name,target_amount,deadline FROM goals WHERE username=? AND is_active=1 AND is_achieved=0 ORDER BY id ASC",
         (username,)
     )
     rows = c.fetchall()
@@ -312,6 +314,17 @@ def toggle_goal_active(username: str, goal_id: int, make_active: bool):
     c.execute(
         "UPDATE goals SET is_active = ? WHERE id = ? AND username = ?",
         (1 if make_active else 0, goal_id, username)
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_goal_achieved(username: str, goal_id: int):
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE goals SET is_active = 0, is_achieved = 1 WHERE id = ? AND username = ?",
+        (goal_id, username)
     )
     conn.commit()
     conn.close()

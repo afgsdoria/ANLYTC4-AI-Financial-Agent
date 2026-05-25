@@ -24,10 +24,10 @@ See where you'll be financially in the coming months with an AI-generated foreca
 Chat with your personal AI finance coach. Ask about banks, investments, loans, or any financial topic!
 
 ## 📄 **Report** — Download Your Financial Summary
-Generate a comprehensive PDF report on your chosen schedule: daily, weekly, monthly, or a custom date.
+A PDF report is generated automatically whenever you update your data, so your latest financial snapshot is always available.
 
-## ⚙️ **Settings** — Manage Profile, Goals & Schedule
-Update your profile, manage multiple active goals, and configure your report schedule here.
+## ⚙️ **Settings** — Manage Profile & Goals
+Update your profile and manage multiple active goals in one place.
 """
 
 

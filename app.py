@@ -23,11 +23,12 @@ from datetime import date, datetime
 from modules.database import (
     create_tables,
     save_user, get_user, set_onboarding_done,
-    set_file_context, update_report_schedule,
+    set_file_context,
     add_expense, get_expenses, get_expenses_with_id,
     get_total_spending, delete_expense,
     save_goal, get_goals, get_active_goal, get_active_goals,
-    set_active_goal, toggle_goal_active, update_goal, delete_goal,
+    set_active_goal, toggle_goal_active, mark_goal_achieved,
+    update_goal, delete_goal,
     save_chat_message, get_chat_history, clear_chat_history,
     save_ai_analysis, get_latest_ai_analysis,
 )
@@ -317,7 +318,7 @@ def _deactivate_completed_goals(username: str, current_savings: float):
         except Exception:
             target = 0.0
         if target > 0 and current_savings >= target:
-            toggle_goal_active(username, goal["id"], False)
+            mark_goal_achieved(username, goal["id"])
 
 
 def _auto_generate_report(username: str, income: float, savings: float, goal_amt: float):
@@ -329,6 +330,19 @@ def _auto_generate_report(username: str, income: float, savings: float, goal_amt
         st.session_state.report_needs_regen = False
     except Exception as exc:
         st.warning(f"Could not generate the latest report automatically: {exc}")
+
+
+def _get_dashboard_goals(uname: str, savings_goal: float) -> list[dict]:
+    goals = get_active_goals(uname) or []
+    if savings_goal > 0:
+        savings_goal_card = {
+            "id": None,
+            "goal_name": "Savings Target",
+            "target_amount": savings_goal,
+            "deadline": "Savings Target",
+        }
+        goals.insert(0, savings_goal_card)
+    return goals
 
 
 def _trigger_ai_analysis():
@@ -578,25 +592,7 @@ elif st.session_state.app_stage == "onboard":
             label_visibility="collapsed",
         )
 
-        # ── SECTION 4: Report Preference ─────────────────────────────────
-        st.markdown("#### 📅 Report Schedule")
-        st.caption("Choose how often you want your AI financial report generated.")
-        report_schedule = st.selectbox(
-            "Report frequency",
-            ["daily", "weekly", "monthly", "custom date"],
-            index=2, key="ob_report_sched",
-        )
-        report_date = None
-        if report_schedule == "custom date":
-            report_date = str(st.date_input(
-                "Pick your custom report date",
-                value=date.today(),
-                key="ob_rdate",
-                min_value=date.today(),
-            ))
-            st.caption("You can generate your report on this date from the Report tab.")
-
-        # ── SECTION 5: Upload Previous Tracker (optional) ─────────────────
+        # ── SECTION 4: Upload Previous Tracker (optional) ─────────────────
         st.markdown("#### 📂 Upload Previous Financial Tracker *(Optional · max 200 MB)*")
         st.caption("Upload a CSV, Excel, PDF, or Word file from your old tracker. The AI will use it as extra context.")
         uploaded = st.file_uploader(
@@ -633,8 +629,6 @@ elif st.session_state.app_stage == "onboard":
             current_savings = current_savings,
             birthday        = str(bday_input),
             age             = int(age),
-            report_schedule = report_schedule,
-            report_date     = report_date,
             file_context    = file_ctx,
             onboarding_done = 0,
         )
@@ -846,9 +840,9 @@ elif st.session_state.app_stage == "dashboard":
             st.rerun()
 
     # ── MAIN TABS ─────────────────────────────────────────────────────────────
-    (t_dash, t_plan, t_expenses, t_chat, t_report, t_settings) = st.tabs([
+    (t_dash, t_plan, t_expenses, t_chat, t_settings) = st.tabs([
         "📊 Dashboard", "🗺️ Action Plan", "💸 Expenses",
-        "💬 AI Chat",   "📄 Report",      "⚙️ Settings",
+        "💬 AI Chat",   "⚙️ Settings",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1035,6 +1029,54 @@ elif st.session_state.app_stage == "dashboard":
                 )
             if st.session_state.cached_report_ts:
                 st.caption(f"Latest PDF generated: {st.session_state.cached_report_ts}")
+
+            rd = st.session_state.cached_report_data
+            if rd:
+                st.markdown("---")
+                shdr("📌 Latest Report Summary")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Monthly Income", pesos(rd["income"]))
+                c2.metric("Total Spending", pesos(rd["spending"]))
+                c3.metric("Remaining", pesos(rd["remaining"]))
+                c4.metric("Current Savings", pesos(rd["savings"]))
+
+                if rd.get("active_goal"):
+                    ag = rd["active_goal"]
+                    prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
+                    st.markdown(
+                        f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
+                        f'padding:14px 18px;margin:12px 0'>
+                        f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
+                        f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
+                        f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
+                        f'<div style="background:#1E2A3A;border-radius:4px;height:8px;overflow:hidden">'
+                        f'  <div style="width:{prog_pct*100:.1f}%;height:8px;'
+                        f'background:linear-gradient(90deg,#2563EB,#60A5FA);border-radius:4px"></div>'
+                        f'</div>'
+                        f'<p style="color:#60A5FA;font-size:.75rem;font-weight:700;margin:4px 0 0">'
+                        f'{pesos(rd["savings"])} saved &nbsp;·&nbsp; {prog_pct*100:.0f}% complete</p>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("---")
+                shdr("🚨 Report Alerts")
+                if rd.get("alerts"):
+                    for alert in rd["alerts"]:
+                        if "🚨" in alert or "⚠" in alert:
+                            st.warning(alert)
+                        else:
+                            st.info(alert)
+                else:
+                    st.success("✅ No report alerts detected.")
+
+                st.markdown("---")
+                shdr("💡 Report Recommendations")
+                if rd.get("recommendations"):
+                    for rec in rd["recommendations"]:
+                        st.info(rec)
+                else:
+                    st.info("Create more data to receive personalised report recommendations.")
         else:
             st.info("📋 Your PDF report is generated automatically when your data changes.")
 
@@ -1227,176 +1269,6 @@ elif st.session_state.app_stage == "dashboard":
             st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 5 — REPORT
-    # • Report is rendered INLINE in the UI (not just a download card).
-    # • First-time users: auto-generated at end of onboarding.
-    # • All users: "Update Report" re-runs AI + re-renders; "Download PDF" saves file.
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_report:
-        st.markdown("## 📄 Financial Report")
-
-        # ── Schedule badge ────────────────────────────────────────────────
-        sched     = st.session_state.report_schedule
-        rdate_str = st.session_state.report_date
-        rdate_info = f" on **{rdate_str}**" if sched == "custom date" and rdate_str else ""
-        st.info(
-            f"📅 Report schedule: **{sched.capitalize()}**{rdate_info} "
-            "— change this in ⚙️ Settings."
-        )
-
-        today_str = str(date.today())
-        schedule_matches = (
-            sched == "daily" or
-            (sched == "weekly"      and date.today().weekday() == 0) or
-            (sched == "monthly"     and date.today().day == 1) or
-            (sched == "custom date" and rdate_str == today_str)
-        )
-        if schedule_matches:
-            st.success("🎉 Today matches your report schedule!")
-
-        if st.session_state.cached_report_path and os.path.exists(st.session_state.cached_report_path):
-            with open(st.session_state.cached_report_path, "rb") as f_pdf:
-                st.download_button(
-                    "⬇️ Download PDF Report",
-                    data=f_pdf,
-                    file_name=f"{uname}_financial_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                    key="rpt_download",
-                )
-        else:
-            st.info(
-                "📋 Your report is generated automatically whenever your data changes. "
-                "It will appear here as soon as it is ready."
-            )
-
-        # ── Inline report display ─────────────────────────────────────────
-        rd = st.session_state.cached_report_data
-
-        if rd:
-            st.markdown("---")
-
-            # Header
-            st.markdown(
-                f'<div style="background:linear-gradient(135deg,#0C1A2E,#0F2040);'
-                f'border:1px solid #1E3A5C;border-radius:16px;padding:24px 28px;margin-bottom:20px">'
-                f'<h2 style="color:#60A5FA;margin:0 0 4px;font-size:1.5rem">💰 Financial AI Agent Report</h2>'
-                f'<p style="color:#4A5568;font-size:.85rem;margin:0">'
-                f'Prepared for <strong style="color:#94A3B8">{uname}</strong> &nbsp;·&nbsp; '
-                f'Generated: <strong style="color:#60A5FA">{rd["generated_at"]}</strong></p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── 1. Financial Summary ──────────────────────────────────────
-            shdr("📌 Financial Summary")
-            r1, r2, r3, r4 = st.columns(4)
-            r1.metric("Monthly Income",  pesos(rd["income"]))
-            r2.metric("Total Spending",  pesos(rd["spending"]))
-            r3.metric("Remaining",       pesos(rd["remaining"]))
-            r4.metric("Current Savings", pesos(rd["savings"]))
-
-            if rd.get("active_goal"):
-                ag = rd["active_goal"]
-                prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
-                st.markdown(
-                    f'<div style="background:#0C1422;border:1px solid #1E3A5C;border-radius:10px;'
-                    f'padding:14px 18px;margin:12px 0">'
-                    f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
-                    f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
-                    f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
-                    f'<div style="background:#1E2A3A;border-radius:4px;height:8px;overflow:hidden">'
-                    f'  <div style="width:{prog_pct*100:.1f}%;height:8px;'
-                    f'background:linear-gradient(90deg,#2563EB,#60A5FA);border-radius:4px"></div>'
-                    f'</div>'
-                    f'<p style="color:#60A5FA;font-size:.75rem;font-weight:700;margin:4px 0 0">'
-                    f'{pesos(rd["savings"])} saved &nbsp;·&nbsp; {prog_pct*100:.0f}% complete</p>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-            # ── 2. Health Score ───────────────────────────────────────────
-            st.markdown("---")
-            shdr("💡 Financial Health Score")
-            ai_badge()
-            score_col = "#22C55E" if rd["score"] >= 80 else "#F59E0B" if rd["score"] >= 60 else "#EF4444"
-            sc1, sc2 = st.columns([1, 2])
-            with sc1:
-                st.markdown(
-                    f'<div style="margin:10px 0">'
-                    f'<span class="score-badge">{rd["score"]}/100</span></div>'
-                    f'<p style="color:{score_col};font-weight:700;font-size:1rem">{rd["level"]}</p>',
-                    unsafe_allow_html=True,
-                )
-            with sc2:
-                fig_rpt_g = go.Figure(go.Indicator(
-                    mode="gauge+number", value=rd["score"],
-                    number={"suffix": "/100", "font": {"color": "#E2E8F0", "size": 22}},
-                    domain={"x": [0, 1], "y": [0, 1]},
-                    gauge={
-                        "axis": {"range": [0, 100], "tickcolor": "#2D3B55",
-                                 "tickfont": {"color": "#64748B"}},
-                        "bar": {"color": score_col, "thickness": 0.28},
-                        "bgcolor": "#131B2E", "bordercolor": "#1E2A3A",
-                        "steps": [
-                            {"range": [0, 40],  "color": "#1C0808"},
-                            {"range": [40, 60], "color": "#1C1507"},
-                            {"range": [60, 80], "color": "#052E16"},
-                            {"range": [80, 100],"color": "#0C1A2E"},
-                        ],
-                    },
-                ))
-                fig_rpt_g.update_layout(
-                    height=180, margin=dict(t=10, b=0, l=10, r=10),
-                    paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#94A3B8"),
-                )
-                st.plotly_chart(fig_rpt_g, use_container_width=True)
-
-            # ── 3. Spending Alerts ────────────────────────────────────────
-            st.markdown("---")
-            shdr("🚨 Spending Alerts")
-            if rd.get("alerts"):
-                for alert in rd["alerts"]:
-                    if "🚨" in alert or "⚠" in alert:
-                        st.warning(alert)
-                    else:
-                        st.info(alert)
-            else:
-                st.success("✅ No spending risks detected.")
-
-            # ── 4. AI Financial Analysis ──────────────────────────────────
-            st.markdown("---")
-            shdr("🤖 AI Financial Analysis")
-            ai_badge()
-            if rd.get("advice"):
-                st.markdown(
-                    f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
-                    f'padding:16px 20px;color:#CBD5E0;font-size:.88rem;line-height:1.7">'
-                    f'{rd["advice"].replace(chr(10), "<br/>")}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-            # ── 5. Smart Recommendations ──────────────────────────────────
-            st.markdown("---")
-            shdr("💡 Smart Recommendations")
-            if rd.get("recommendations"):
-                for rec in rd["recommendations"]:
-                    st.info(rec)
-            else:
-                st.info("Log more data to receive personalised recommendations.")
-
-            st.markdown(
-                '<p style="color:#2D3B55;font-size:.75rem;text-align:center;margin-top:24px">'
-                'Generated by Financial AI Agent · For personal reference only.</p>',
-                unsafe_allow_html=True,
-            )
-
-        elif not st.session_state.cached_report_path:
-            st.markdown("---")
-            st.info("📋 No report yet. Your report will be created automatically as soon as your data is analyzed.")
-
-    # ══════════════════════════════════════════════════════════════════════════
     # TAB 6 — SETTINGS
     # ══════════════════════════════════════════════════════════════════════════
     with t_settings:
@@ -1454,60 +1326,37 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
 
-        # Report schedule
-        shdr("📅 Report Schedule")
-        st.caption("Set how often you want your PDF report automatically generated.")
-        sched_opts = ["daily","weekly","monthly","custom date"]
-        cur_idx = sched_opts.index(st.session_state.report_schedule) \
-                  if st.session_state.report_schedule in sched_opts else 2
-        sched = st.selectbox("How often do you want a report?", sched_opts,
-                              index=cur_idx, key="set_sched")
-        rdate = None
-        if sched == "custom date":
-            rdate = str(st.date_input(
-                "Pick your custom date",
-                value=date.today(),
-                key="set_rdate",
-                min_value=date.today(),
-            ))
-            st.caption("Your report will be ready for download on this date.")
-
-        if st.button("💾 Save Schedule", key="save_sched"):
-            update_report_schedule(uname, sched, rdate)
-            st.session_state.report_schedule = sched
-            st.session_state.report_date     = rdate
-            st.success(
-                f"✅ Report schedule saved: **{sched}**"
-                + (f" on {rdate}" if rdate else "")
-            )
-
-        st.markdown("---")
-
         # Goals manager
         shdr("🎯 Manage Goals")
         st.caption("You can activate **multiple goals simultaneously**. Toggle each independently.")
         all_goals = get_goals(uname)
         if all_goals:
-            for gid, gname, gtarget, gdeadline, gactive in all_goals:
+            for gid, gname, gtarget, gdeadline, gactive, gachieved in all_goals:
                 gp = min(1.0, savings / gtarget if gtarget > 0 else 0)
                 gc1, gc2, gc3, gc4 = st.columns([4, 2, 1, 1])
                 with gc1:
-                    status_icon = "🟢 Active" if gactive else "⚫ Inactive"
+                    if gachieved:
+                        status_icon = "🏁 Achieved"
+                    elif gactive:
+                        status_icon = "🟢 Active"
+                    else:
+                        status_icon = "⚫ Inactive"
                     st.markdown(f"**{gname}** &nbsp; {status_icon}")
                     st.caption(f"{pesos(gtarget)} · Deadline: {gdeadline}")
                     st.progress(gp, text=f"{gp*100:.0f}% saved")
                 with gc2:
-                    btn_label = "⏸ Deactivate" if gactive else "▶ Activate"
-                    if st.button(btn_label, key=f"tog_{gid}", use_container_width=True):
-                        toggle_goal_active(uname, gid, not bool(gactive))
-                        with st.spinner("Updating your plan and report…"):
-                            _trigger_ai_analysis()
-                        st.success(
-                            f"✅ Goal **{gname}** {'deactivated' if gactive else 'activated'} successfully."
-                        )
-                        st.rerun()
+                    if not gachieved:
+                        btn_label = "⏸ Deactivate" if gactive else "▶ Activate"
+                        if st.button(btn_label, key=f"tog_{gid}", use_container_width=True):
+                            toggle_goal_active(uname, gid, not bool(gactive))
+                            with st.spinner("Updating your plan and report…"):
+                                _trigger_ai_analysis()
+                            st.success(
+                                f"✅ Goal **{gname}** {'deactivated' if gactive else 'activated'} successfully."
+                            )
+                            st.rerun()
                 with gc3:
-                    if st.button("✏️", key=f"eg_{gid}", help="Edit"):
+                    if not gachieved and st.button("✏️", key=f"eg_{gid}", help="Edit"):
                         st.session_state[f"em_{gid}"] = True
                 with gc4:
                     if st.button("🗑️", key=f"dg_{gid}", help="Delete"):
@@ -1547,7 +1396,6 @@ elif st.session_state.app_stage == "dashboard":
             ("💵 Monthly Income",  pesos(income)),
             ("🎯 Savings Target",  pesos(goal_amt)),
             ("🏦 Current Savings", pesos(savings)),
-            ("📅 Report Schedule", st.session_state.report_schedule.capitalize()),
         ]
         rows_html = "".join(
             f'<div class="profile-row">'

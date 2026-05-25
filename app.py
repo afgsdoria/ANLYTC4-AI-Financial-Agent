@@ -587,7 +587,7 @@ elif st.session_state.app_stage == "dashboard":
         st.markdown("---")
 
         # ── Active Goal(s) Progress ──────────────────────
-        active_goals_sb = get_active_goals(uname_sb)
+        active_goals_sb = get_active_goals(uname)
         if active_goals_sb:
             st.markdown(f"### 🎯 Active Goal{'s' if len(active_goals_sb)>1 else ''}")
             for ag in active_goals_sb:

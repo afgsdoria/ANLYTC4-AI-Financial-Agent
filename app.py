@@ -7,6 +7,8 @@ Redesigned user journey:
 CHANGES:
   - Fixed sidebar Active Goal progress bar (correct ratio + cleaner labels)
   - Moved Savings Forecast into Dashboard tab (after spending charts)
+  - AI Forecast Commentary moved to Dashboard tab under Savings Forecast
+  - Removed all "AI Generated" badges
   - Report tab: auto-generates report for first-time users after onboarding;
     returning users see their latest report and can Update or Download PDF
   - Age is now derived from user's birthday input (date_input) — not entered manually
@@ -213,12 +215,6 @@ hr{border-color:#1E2A3A !important}
 .toast-success{background:#052e16;border:1px solid #22C55E;border-radius:10px;
   padding:12px 18px;color:#86EFAC;font-weight:600;margin:8px 0}
 
-/* agentic badge */
-.ai-badge{display:inline-flex;align-items:center;gap:5px;
-  background:linear-gradient(135deg,#1E1B4B,#312E81);
-  border:1px solid #4F46E5;border-radius:20px;
-  padding:3px 12px;font-size:.72rem;font-weight:700;color:#A5B4FC;margin-bottom:8px}
-
 /* goal progress in sidebar */
 .goal-prog-wrap{background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;
   padding:12px 14px;margin-bottom:10px}
@@ -242,12 +238,12 @@ hr{border-color:#1E2A3A !important}
 # ══════════════════════════════════════════════════════════════════════════════
 def pesos(v): return f"₱{float(v):,.2f}"
 def shdr(t):  st.markdown(f'<div class="shdr">{t}</div>', unsafe_allow_html=True)
-def ai_badge(): st.markdown('<span class="ai-badge">🤖 AI Generated</span>', unsafe_allow_html=True)
 
 def compute_age(bday: date) -> int:
     """Return full years between bday and today."""
     today = date.today()
     return today.year - bday.year - ((today.month, today.day) < (bday.month, bday.day))
+
 def pcfg():
     return dict(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0D1117",
@@ -638,8 +634,6 @@ elif st.session_state.app_stage == "onboard":
         st.session_state.monthly_income  = monthly_income
         st.session_state.current_savings = current_savings
         st.session_state.savings_goal    = savings_goal_overall
-        st.session_state.report_schedule = report_schedule
-        st.session_state.report_date     = report_date
         st.session_state.file_context    = file_ctx
 
         # Parse and save goal
@@ -712,7 +706,7 @@ elif st.session_state.app_stage == "dashboard":
         )
         st.markdown("---")
 
-        # ── Active Goal(s) Progress — FIXED ──────────────────────────────
+        # ── Active Goal(s) Progress ───────────────────────────────────────
         active_goals_sb = get_active_goals(uname)
         if active_goals_sb:
             goal_label = "Active Goal" if len(active_goals_sb) == 1 else "Active Goals"
@@ -720,11 +714,8 @@ elif st.session_state.app_stage == "dashboard":
             for ag in active_goals_sb:
                 target = float(ag["target_amount"]) if ag["target_amount"] else 0.0
                 saved  = float(savings)
-                # Clamp progress to [0.0, 1.0]
                 prog   = min(1.0, saved / target) if target > 0 else 0.0
                 pct    = prog * 100
-
-                # Custom HTML progress bar (reliable in sidebar)
                 bar_width = f"{pct:.1f}%"
                 st.markdown(
                     f'<div class="goal-prog-wrap">'
@@ -765,7 +756,6 @@ elif st.session_state.app_stage == "dashboard":
                 else:
                     add_expense(uname, exp_cat, exp_amt, str(exp_date))
 
-                    # ── If category is Savings, add to current_savings ──
                     if exp_cat == "Savings":
                         new_savings = st.session_state.current_savings + exp_amt
                         st.session_state.current_savings = new_savings
@@ -846,7 +836,7 @@ elif st.session_state.app_stage == "dashboard":
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 1 — DASHBOARD  (includes Forecast section)
+    # TAB 1 — DASHBOARD
     # ══════════════════════════════════════════════════════════════════════════
     with t_dash:
         st.markdown("## 📊 Dashboard")
@@ -877,7 +867,6 @@ elif st.session_state.app_stage == "dashboard":
                 unsafe_allow_html=True,
             )
             if ai.get("health_summary"):
-                ai_badge()
                 st.info(ai["health_summary"])
 
         with c_ga:
@@ -911,7 +900,6 @@ elif st.session_state.app_stage == "dashboard":
 
         with sh_col:
             shdr("🔍 AI Spending Analysis")
-            ai_badge()
             if ai.get("spending_habits"):
                 st.info(ai["spending_habits"])
             else:
@@ -921,7 +909,6 @@ elif st.session_state.app_stage == "dashboard":
 
         with rf_col:
             shdr("🚩 Risk Flags")
-            ai_badge()
             flags = ai.get("risk_flags") or []
             if flags:
                 badges = "".join(f'<span class="risk-badge">{f}</span>' for f in flags)
@@ -934,9 +921,8 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
 
-        # Charts — AI-generated data + narrated
+        # Charts
         shdr("📈 AI-Generated Spending Breakdown")
-        ai_badge()
 
         chart_data    = ai.get("chart_data") or {}
         ai_categories = chart_data.get("categories") or []
@@ -988,10 +974,9 @@ elif st.session_state.app_stage == "dashboard":
         else:
             st.info("Log expenses using the sidebar — AI-generated charts will appear here.")
 
-        # ── SAVINGS FORECAST (moved from its own tab) ─────────────────────
+        # ── SAVINGS FORECAST ──────────────────────────────────────────────
         st.markdown("---")
         shdr("🔮 Savings Forecast")
-        ai_badge()
 
         spending_now = get_total_spending(uname)
         fdf, monthly_sav, est_mo = generate_forecast(income, spending_now, savings, goal_amt)
@@ -1014,6 +999,10 @@ elif st.session_state.app_stage == "dashboard":
             )
         fig_fc.update_layout(height=340, margin=dict(t=30, b=20, l=20, r=20), **pcfg())
         st.plotly_chart(fig_fc, use_container_width=True)
+
+        # ── AI FORECAST COMMENTARY (moved here from Action Plan) ──────────
+        if ai.get("forecast_narrative"):
+            st.info(f"🤖 {ai['forecast_narrative']}")
 
         st.markdown("---")
         st.markdown("### 📄 Your Latest Report")
@@ -1045,7 +1034,7 @@ elif st.session_state.app_stage == "dashboard":
                     prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
                     st.markdown(
                         f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
-                        f'padding:14px 18px;margin:12px 0'>
+                        f'padding:14px 18px;margin:12px 0">'
                         f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
                         f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
                         f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
@@ -1080,17 +1069,12 @@ elif st.session_state.app_stage == "dashboard":
         else:
             st.info("📋 Your PDF report is generated automatically when your data changes.")
 
-        if ai.get("forecast_narrative"):
-            st.info(f"🤖 {ai['forecast_narrative']}")
-
-
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2 — ACTION PLAN
     # ══════════════════════════════════════════════════════════════════════════
     with t_plan:
         st.markdown("## 🗺️ Your AI Action Plan")
         st.caption("A step-by-step roadmap generated by the AI reasoning engine — decision rules, planning, and multi-step goal execution without human intervention.")
-        ai_badge()
 
         all_active = get_active_goals(uname)
         for ag in all_active:
@@ -1130,17 +1114,10 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
         shdr("💡 Smart Recommendations")
-        ai_badge()
         expenses = get_expenses(uname)
         recs = generate_recommendations(income, spending, goal_amt, savings, expenses, active_goal)
         for r in recs:
             st.info(r)
-
-        if ai.get("forecast_narrative"):
-            st.markdown("---")
-            shdr("🔮 AI Forecast Commentary")
-            ai_badge()
-            st.info(ai["forecast_narrative"])
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 3 — EXPENSES
@@ -1182,7 +1159,6 @@ elif st.session_state.app_stage == "dashboard":
                 c3.markdown(f"<span style='color:#60A5FA;font-weight:700'>{pesos(row['Amount'])}</span>",
                              unsafe_allow_html=True)
                 if c4.button("🗑️", key=f"del_{row['ID']}", help="Delete"):
-                    # If it's a savings entry, reverse the savings addition
                     if row["Category"] == "Savings":
                         new_savings = max(0.0, st.session_state.current_savings - float(row["Amount"]))
                         st.session_state.current_savings = new_savings
@@ -1269,7 +1245,7 @@ elif st.session_state.app_stage == "dashboard":
             st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 6 — SETTINGS
+    # TAB 5 — SETTINGS
     # ══════════════════════════════════════════════════════════════════════════
     with t_settings:
         st.markdown("## ⚙️ Settings")
@@ -1282,7 +1258,6 @@ elif st.session_state.app_stage == "dashboard":
             u_type = st.selectbox("User Type", opts,
                                    index=opts.index(st.session_state.user_type)
                                    if st.session_state.user_type in opts else 0)
-            # Birthday → auto-compute age
             current_bday_str = st.session_state.get("birthday")
             if current_bday_str:
                 try:

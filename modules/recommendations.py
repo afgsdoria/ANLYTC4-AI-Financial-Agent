@@ -5,6 +5,42 @@ Produces context-aware financial recommendations.
 from collections import defaultdict
 
 
+def _get_emergency_fund_goal(active_goals: list[dict] | None) -> dict | None:
+    if not active_goals:
+        return None
+
+    for goal in active_goals:
+        goal_name = str(goal.get("goal_name", "")).strip().lower()
+        if "emergency" in goal_name:
+            return goal
+
+    return None
+
+
+def _get_emergency_fund_recommendation(active_goals: list[dict] | None, current_savings: float, monthly_income: float) -> str | None:
+    recommended_target = monthly_income * 3
+    if recommended_target <= 0:
+        return None
+
+    if current_savings >= recommended_target:
+        return None
+
+    emergency_goal = _get_emergency_fund_goal(active_goals)
+    if emergency_goal:
+        target_amount = float(emergency_goal.get("target_amount", 0) or 0)
+        if target_amount < recommended_target:
+            return (
+                f"🛡️ Increase your Emergency Fund target to ₱{recommended_target:,.2f} based on your current income. "
+                f"Your current target is ₱{target_amount:,.2f}."
+            )
+        return None
+
+    return (
+        f"🛡️ Consider setting an Emergency Fund goal of ₱{recommended_target:,.2f} based on your current income. "
+        f"You currently have ₱{current_savings:,.2f} saved."
+    )
+
+
 def generate_recommendations(
     monthly_income: float,
     total_spending: float,
@@ -12,6 +48,7 @@ def generate_recommendations(
     current_savings: float = 0.0,
     expenses: list[tuple] | None = None,
     active_goal: dict | None = None,
+    active_goals: list[dict] | None = None,
 ) -> list[str]:
     recs = []
     if monthly_income <= 0:
@@ -26,10 +63,17 @@ def generate_recommendations(
         recs.append(f"🛑 You have no remaining balance. Aim to cut at least ₱{abs(net):,.2f} in spending this month.")
     label_lookup = {
         "Food": "Needs",
+        "Groceries": "Needs",
         "Bills": "Needs",
+        "Telecommunication Bills": "Needs",
         "Transportation": "Needs",
         "Health": "Needs",
+        "School": "Needs",
+        "Insurance": "Needs",
+        "Government Contribution": "Needs",
+        "HMO": "Needs",
         "Savings": "Savings",
+        "Investment": "Savings",
         "Entertainment": "Wants",
         "Shopping": "Wants",
         "Other": "Wants",
@@ -42,7 +86,7 @@ def generate_recommendations(
         portions = []
         for section in ["Needs", "Wants", "Savings"]:
             portion = section_totals[section] / monthly_income
-            portions.append(f"{section}: {portion*100:.0f}%")
+            portions.append(f"{section}: {portion*100:.0f}% (₱{section_totals[section]:,.2f})")
         recs.append(
             "🔢 Personalized spending breakdown — " + ", ".join(portions)
         )
@@ -74,7 +118,8 @@ def generate_recommendations(
         if net > 0:
             months_needed = gap / net
             recs.append(f"🎯 You need ₱{gap:,.2f} more to hit your savings goal. Estimated: {months_needed:.1f} months at current pace.")
-    emergency_fund = monthly_income * 3
-    if current_savings < emergency_fund:
-        recs.append(f"🛡️ Build a 3-month emergency fund (₱{emergency_fund:,.2f}) before focusing on other goals.")
+
+    emergency_recommendation = _get_emergency_fund_recommendation(active_goals, current_savings, monthly_income)
+    if emergency_recommendation:
+        recs.append(emergency_recommendation)
     return recs

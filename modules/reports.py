@@ -24,9 +24,7 @@ def generate_financial_report(
     total_spending: float = 0.0,
     current_savings: float = 0.0,
     savings_goal: float = 0.0,
-    goal_name: str | None = None,
-    target_amount: float | None = None,
-    deadline: str | None = None,
+    active_goals: list[dict] | None = None,
 ) -> str:
     output_dir = os.path.join("data", "exports", "reports")
     os.makedirs(output_dir, exist_ok=True)
@@ -75,14 +73,15 @@ def generate_financial_report(
     ]))
     elements.append(tbl)
     elements.append(Spacer(1, 12))
-    elements.append(Paragraph("🎯 Active Financial Goal", h2_style))
-    if goal_name:
-        elements.append(Paragraph(
-            f"<b>Goal:</b> {goal_name}<br/>"
-            f"<b>Target Amount:</b> ₱{target_amount:,.2f}<br/>"
-            f"<b>Deadline:</b> {deadline}",
-            body_style,
-        ))
+    elements.append(Paragraph("🎯 Active Financial Goals", h2_style))
+    if active_goals:
+        for goal in active_goals:
+            elements.append(Paragraph(
+                f"<b>Goal:</b> {goal.get('goal_name')}<br/>"
+                f"<b>Target Amount:</b> ₱{float(goal.get('target_amount') or 0):,.2f}<br/>"
+                f"<b>Deadline:</b> {goal.get('deadline')}",
+                body_style,
+            ))
     else:
         elements.append(Paragraph("No active financial goal set.", body_style))
     elements.append(Spacer(1, 12))

@@ -1,125 +1,129 @@
-"""
-recommendations.py
-Produces context-aware financial recommendations.
-"""
-from collections import defaultdict
+def generate_recommendations(
+    monthly_income,
+    total_spending,
+    savings_goal,
+    current_savings=0,
+    expenses=None,
+    active_goal=None,
+):
+    recommendations = []
 
+    monthly_income   = float(monthly_income  or 0)
+    total_spending   = float(total_spending  or 0)
+    savings_goal     = float(savings_goal    or 0)
+    current_savings  = float(current_savings or 0)
 
-def _get_emergency_fund_goal(active_goals: list[dict] | None) -> dict | None:
-    if not active_goals:
-        return None
+    if monthly_income <= 0:
+        recommendations.append(
+            "💡 Set your monthly income in your profile to receive personalised recommendations."
+        )
+        return recommendations
 
-    for goal in active_goals:
-        goal_name = str(goal.get("goal_name", "")).strip().lower()
-        if "emergency" in goal_name:
-            return goal
+    remaining = monthly_income - total_spending
 
-    return None
+    # =========================
+    # WEEKLY BUDGET
+    # =========================
+    if remaining > 0:
+        weekly_budget = remaining / 4
+        recommendations.append(
+            f"💡 Suggested weekly budget: ₱{weekly_budget:,.2f}"
+        )
+    else:
+        recommendations.append(
+            "⚠️ Your spending exceeds your income. Try to cut non-essential expenses immediately."
+        )
 
-
-def _get_emergency_fund_recommendation(active_goals: list[dict] | None, current_savings: float, monthly_income: float) -> str | None:
-    recommended_target = monthly_income * 3
-    if recommended_target <= 0:
-        return None
-
-    if current_savings >= recommended_target:
-        return None
-
-    emergency_goal = _get_emergency_fund_goal(active_goals)
-    if emergency_goal:
-        target_amount = float(emergency_goal.get("target_amount", 0) or 0)
-        if target_amount < recommended_target:
-            return (
-                f"🛡️ Increase your Emergency Fund target to ₱{recommended_target:,.2f} based on your current income. "
-                f"Your current target is ₱{target_amount:,.2f}."
-            )
-        return None
-
-    return (
-        f"🛡️ Consider setting an Emergency Fund goal of ₱{recommended_target:,.2f} based on your current income. "
-        f"You currently have ₱{current_savings:,.2f} saved."
+    # =========================
+    # SAVINGS ADVICE
+    # =========================
+    suggested_savings = monthly_income * 0.20
+    recommendations.append(
+        f"💰 Recommended monthly savings (20% rule): ₱{suggested_savings:,.2f}"
     )
 
+    # =========================
+    # GOAL PACING
+    # =========================
+    if savings_goal > 0 and suggested_savings > 0:
+        months_to_goal = savings_goal / suggested_savings
+        recommendations.append(
+            f"🎯 At ₱{suggested_savings:,.2f}/month, "
+            f"you'll reach your ₱{savings_goal:,.2f} goal in "
+            f"~{months_to_goal:.1f} months."
+        )
 
-def generate_recommendations(
-    monthly_income: float,
-    total_spending: float,
-    savings_goal: float,
-    current_savings: float = 0.0,
-    expenses: list[tuple] | None = None,
-    active_goal: dict | None = None,
-    active_goals: list[dict] | None = None,
-) -> list[str]:
-    recs = []
-    if monthly_income <= 0:
-        recs.append("💡 Enter your monthly income to unlock personalised recommendations.")
-        return recs
-    net = monthly_income - total_spending
-    spending_ratio = total_spending / monthly_income
-    if net > 0:
-        weekly = net / 4.33
-        recs.append(f"📅 Suggested weekly budget from remaining balance: ₱{weekly:,.2f}")
-    else:
-        recs.append(f"🛑 You have no remaining balance. Aim to cut at least ₱{abs(net):,.2f} in spending this month.")
-    label_lookup = {
-        "Food": "Needs",
-        "Groceries": "Needs",
-        "Bills": "Needs",
-        "Telecommunication Bills": "Needs",
-        "Transportation": "Needs",
-        "Health": "Needs",
-        "School": "Needs",
-        "Insurance": "Needs",
-        "Government Contribution": "Needs",
-        "HMO": "Needs",
-        "Savings": "Savings",
-        "Investment": "Savings",
-        "Entertainment": "Wants",
-        "Shopping": "Wants",
-        "Other": "Wants",
-    }
-    section_totals: dict[str, float] = {"Needs": 0.0, "Wants": 0.0, "Savings": 0.0}
-    if expenses:
-        for category, amount, _ in expenses:
-            section = label_lookup.get(category, "Wants")
-            section_totals[section] += amount
-        portions = []
-        for section in ["Needs", "Wants", "Savings"]:
-            portion = section_totals[section] / monthly_income
-            portions.append(f"{section}: {portion*100:.0f}% (₱{section_totals[section]:,.2f})")
-        recs.append(
-            "🔢 Personalized spending breakdown — " + ", ".join(portions)
+    # =========================
+    # ACTIVE GOAL PACING
+    # =========================
+    if active_goal:
+        try:
+            target   = float(active_goal.get("target_amount") or 0)
+            deadline = str(active_goal.get("deadline") or "")
+            name     = active_goal.get("goal_name", "your goal")
+            remaining_goal = max(0, target - current_savings)
+
+            if target > 0 and remaining > 0:
+                months_needed = remaining_goal / remaining
+                recommendations.append(
+                    f"🏁 For '{name}': you need ₱{remaining_goal:,.2f} more. "
+                    f"Saving ₱{remaining:,.2f}/month gets you there in "
+                    f"~{months_needed:.1f} months."
+                )
+        except Exception:
+            pass
+
+    # =========================
+    # EMERGENCY FUND
+    # Only show if current savings
+    # are below 3 months of income
+    # =========================
+    emergency_fund_target = monthly_income * 3
+
+    if current_savings < emergency_fund_target:
+        shortfall = emergency_fund_target - current_savings
+        recommendations.append(
+            f"🛡️ Emergency Fund: You need ₱{emergency_fund_target:,.2f} "
+            f"(3× your monthly income of ₱{monthly_income:,.2f}). "
+            f"You currently have ₱{current_savings:,.2f} saved — "
+            f"₱{shortfall:,.2f} short. "
+            f"Try saving ₱{shortfall/12:,.2f}/month to build it in a year."
         )
-    else:
-        recs.append(
-            "🔢 Personalised budget suggestion: focus your spending on needs first, then wants, and grow savings based on your income and goals."
+    # If current_savings >= emergency_fund_target, skip — goal already met
+
+    # =========================
+    # HIGH SPENDING WARNING
+    # =========================
+    spending_ratio = total_spending / monthly_income if monthly_income > 0 else 0
+
+    if spending_ratio > 0.9:
+        recommendations.append(
+            "🚨 Critical: You are spending over 90% of your income. "
+            "Review your expenses and cut non-essentials urgently."
         )
+    elif spending_ratio > 0.7:
+        recommendations.append(
+            "⚠️ You are spending over 70% of your income. "
+            "Consider reducing discretionary spending."
+        )
+
+    # =========================
+    # CATEGORY-SPECIFIC TIPS
+    # =========================
     if expenses:
-        cat_totals: dict[str, float] = defaultdict(float)
-        for cat, amt, _ in expenses:
-            cat_totals[cat] += amt
-        if cat_totals.get("Food", 0) > monthly_income * 0.25:
-            recs.append("🍱 Try meal prepping or cooking at home to reduce food expenses — you can save ₱500–₱1,500/month easily.")
-        if cat_totals.get("Entertainment", 0) > monthly_income * 0.10:
-            recs.append("🎮 Look for free or low-cost entertainment alternatives (free parks, community events, library books).")
-        if cat_totals.get("Transportation", 0) > monthly_income * 0.15:
-            recs.append("🚌 Consider carpooling, bike commuting, or optimising routes to trim transportation costs.")
-    if active_goal and monthly_income > 0:
-        target = active_goal.get("target_amount", 0)
-        remaining_goal = max(0, target - current_savings)
-        if net > 0 and remaining_goal > 0:
-            months_to_goal = remaining_goal / net
-            recs.append(
-                f"🎯 At your current rate you'll reach '{active_goal['goal_name']}' in ~{months_to_goal:.1f} months. "
-                f"Save an extra ₱{net*0.1:,.2f}/month to get there faster!"
+        food_total     = sum(float(e[1]) for e in expenses if e[0] == "Food")
+        shopping_total = sum(float(e[1]) for e in expenses if e[0] == "Shopping")
+
+        if food_total > monthly_income * 0.30:
+            recommendations.append(
+                f"🍽️ Food spending (₱{food_total:,.2f}) exceeds 30% of your income. "
+                f"Consider meal prepping or cooking at home more often."
             )
-    elif savings_goal > 0 and current_savings < savings_goal:
-        gap = savings_goal - current_savings
-        if net > 0:
-            months_needed = gap / net
-            recs.append(f"🎯 You need ₱{gap:,.2f} more to hit your savings goal. Estimated: {months_needed:.1f} months at current pace.")
 
-    emergency_recommendation = _get_emergency_fund_recommendation(active_goals, current_savings, monthly_income)
-    if emergency_recommendation:
-        recs.append(emergency_recommendation)
-    return recs
+        if shopping_total > monthly_income * 0.20:
+            recommendations.append(
+                f"🛍️ Shopping (₱{shopping_total:,.2f}) is over 20% of your income. "
+                f"Try a 24-hour rule before non-essential purchases."
+            )
+
+    return recommendations

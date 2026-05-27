@@ -932,13 +932,19 @@ elif st.session_state.app_stage == "dashboard":
         sh_col, rf_col = st.columns(2)
 
         with sh_col:
-            shdr("AI Spending Analysis")
-            if ai.get("spending_habits"):
+            st.markdown('<div class="shdr">🔍 AI Spending Analysis</div>', unsafe_allow_html=True)
+            if ai.get("spending_habits") and str(ai["spending_habits"]).strip() != "":
                 st.info(ai["spending_habits"])
             else:
                 alerts = generate_spending_alerts(income, spending, expenses)
-                for a in (alerts or ["✅ No spending issues detected."]):
-                    st.warning(a) if "⚠" in a or "🚨" in a else st.success(a)
+                if alerts:
+                    for a in alerts:
+                        # CRITICAL DEFENSE: Enforce that 'a' must be a clean string, blocking raw DeltaGenerators
+                        if isinstance(a, str) and str(a).strip() != "":
+                            if "⚠" in a or "🚨" in a:
+                                st.warning(a)
+                            else:
+                                st.success(a)
 
         with rf_col:
             shdr("Risk Flags")

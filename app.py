@@ -1198,23 +1198,23 @@ elif st.session_state.app_stage == "dashboard":
             )
             df_show = df_all if not cat_filter else df_all[df_all["Category"].isin(cat_filter)]
 
-            h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
-            for col, lbl in zip([h1,h2,h3,h4], ["DATE","CATEGORY","AMOUNT",""]):
-                col.markdown(
-                    f"<span style='color:#60A5FA;font-size:.8rem;font-weight:700'>{lbl}</span>",
-                    unsafe_allow_html=True,
-                )
-            st.markdown("<hr style='margin:4px 0 6px;border-color:#1E2A3A'>", unsafe_allow_html=True)
+            st.markdown("### Expense History")
+            st.dataframe(df_show["Date Category Amount".split()], use_container_width=True)
 
-            for _, row in df_show.iterrows():
-                c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
-                c1.markdown(f"<span style='color:#4A5568;font-size:.87rem'>{row['Date']}</span>",
-                             unsafe_allow_html=True)
-                c2.markdown(f"<span style='color:#CBD5E0;font-weight:600'>{row['Category']}</span>",
-                             unsafe_allow_html=True)
-                c3.markdown(f"<span style='color:#60A5FA;font-weight:700'>{pesos(row['Amount'])}</span>",
-                             unsafe_allow_html=True)
-                if c4.button("🗑️", key=f"del_{row['ID']}", help="Delete"):
+            if not df_show.empty:
+                delete_options = [
+                    f"{int(row['ID'])} — {row['Date']} | {row['Category']} | {pesos(row['Amount'])}"
+                    for _, row in df_show.iterrows()
+                ]
+                delete_choice = st.selectbox(
+                    "Delete an expense",
+                    options=delete_options,
+                    key="delete_expense_choice",
+                    help="Select a transaction to remove it from the log.",
+                )
+                if st.button("🗑️ Delete selected expense"):
+                    expense_id = int(delete_choice.split(" — ", 1)[0])
+                    row = df_show[df_show["ID"] == expense_id].iloc[0]
                     if row["Category"] == "Savings":
                         new_savings = max(0.0, st.session_state.current_savings - float(row["Amount"]))
                         st.session_state.current_savings = new_savings
@@ -1231,7 +1231,7 @@ elif st.session_state.app_stage == "dashboard":
                             st.session_state.file_context,
                             1,
                         )
-                    delete_expense(int(row["ID"]))
+                    delete_expense(expense_id)
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
                     st.success("✅ Expense deleted successfully.")

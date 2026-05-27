@@ -34,11 +34,11 @@ def calculate_financial_health_score(
         score -= 10
     score = max(0, min(100, score))
     if score >= 80:
-        level = "Excellent 🌟"
+        level = "Excellent"
     elif score >= 60:
-        level = "Good 👍"
+        level = "Good"
     elif score >= 40:
-        level = "Fair ⚠️"
+        level = "Fair"
     else:
-        level = "Poor 🔴"
+        level = "Poor"
     return score, level

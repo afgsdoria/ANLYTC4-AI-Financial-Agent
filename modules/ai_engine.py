@@ -1,8 +1,3 @@
-"""
-ai_engine.py — All OpenAI GPT calls with agentic reasoning
-Reasoning engine: multi-step planning, decision rules, autonomous analysis
-"""
-
 import os
 import json
 from datetime import datetime
@@ -42,11 +37,11 @@ def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
         return f"⚠️ AI Error: {e}"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # 1. AGENTIC FULL ANALYSIS  (reasoning engine + decision rules + planning)
 #    Returns JSON with keys: health_summary, spending_habits, risk_flags,
 #    step_plan, chart_insights, forecast_narrative, chart_data
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def run_full_agent_analysis(
     username, user_type, age, income, current_savings,
@@ -148,17 +143,30 @@ Return ONLY this JSON (no markdown fences, no extra text):
 
     try:
         result = json.loads(raw)
-        # Validate chart_data structure
+        
+        # Validate and filter chart_data structure
         cd = result.get("chart_data", {})
         cats = cd.get("categories", [])
         amts = cd.get("amounts", [])
-        if not cats or not amts or len(cats) != len(amts):
-            # Build from raw expenses as fallback
+        
+        if cats and amts and len(cats) == len(amts):
+            # Strict adjustment: filter out zero logs so they do not render in dashboard
+            filtered_cats = []
+            filtered_amts = []
+            for c, a in zip(cats, amts):
+                if float(a) > 0:
+                    filtered_cats.append(c)
+                    filtered_amts.append(float(a))
+            result["chart_data"]["categories"] = filtered_cats
+            result["chart_data"]["amounts"] = filtered_amts
+        else:
+            # Build from raw expenses as baseline fallback
             if expenses:
                 from collections import defaultdict
                 cat_totals = defaultdict(float)
                 for c, a, _ in expenses:
-                    cat_totals[c] += a
+                    if a > 0:
+                        cat_totals[c] += a
                 result["chart_data"] = {
                     "categories": list(cat_totals.keys()),
                     "amounts": list(cat_totals.values()),
@@ -167,14 +175,16 @@ Return ONLY this JSON (no markdown fences, no extra text):
             else:
                 result["chart_data"] = {}
         return result
+
     except Exception:
-        # Fallback so the app never crashes
+        # Fallback dictionary safety net to keep pipeline from crashing on structural anomalies
         fallback_chart = {}
         if expenses:
             from collections import defaultdict
             cat_totals = defaultdict(float)
             for c, a, _ in expenses:
-                cat_totals[c] += a
+                if a > 0:
+                    cat_totals[c] += a
             fallback_chart = {
                 "categories": list(cat_totals.keys()),
                 "amounts": list(cat_totals.values()),
@@ -194,9 +204,9 @@ Return ONLY this JSON (no markdown fences, no extra text):
         }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # 2. AI CHART DATA GENERATOR (standalone — for dashboard refresh)
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def generate_ai_charts(
     expenses: list,
@@ -205,7 +215,7 @@ def generate_ai_charts(
 ) -> dict:
     """
     Generate AI-structured chart data from expenses.
-    Falls back to raw aggregation if AI fails.
+    Filters out categories with zero transactions.
     """
     if not expenses:
         return {}
@@ -235,24 +245,36 @@ Return ONLY this JSON:
 """
     raw = _chat(system, prompt, temperature=0.2, max_tokens=400)
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    
     try:
         data = json.loads(raw)
         if len(data.get("categories", [])) == len(data.get("amounts", [])):
-            return data
+            # Filter zero totals to keep dashboard clean
+            f_cats = []
+            f_amts = []
+            for c, a in zip(data["categories"], data["amounts"]):
+                if float(a) > 0:
+                    f_cats.append(c)
+                    f_amts.append(float(a))
+            return {
+                "categories": f_cats, 
+                "amounts": f_amts, 
+                "insight": data.get("insight", "")
+            }
     except Exception:
         pass
 
-    # Fallback: plain aggregation
+    # Fallback aggregation matching the exact zero-filter rule
     return {
-        "categories": list(cat_totals.keys()),
-        "amounts": list(cat_totals.values()),
+        "categories": [c for c, a in cat_totals.items() if a > 0],
+        "amounts": [a for c, a in cat_totals.items() if a > 0],
         "insight": "Chart built from your logged expense data.",
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # 3. FINANCIAL ADVICE (for PDF report)
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def generate_financial_advice(
     username, user_type, income, savings_goal,
@@ -285,9 +307,9 @@ Use ₱ for peso amounts.
     return _chat(system, prompt)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # 4. UPLOADED FILE ANALYSIS
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def analyze_uploaded_financial_file(file_content: str) -> str:
     system = "You are a financial data analyst for Filipinos."
@@ -299,16 +321,16 @@ Analyze this uploaded financial tracker:
 
 Provide:
 1. Key spending patterns (2-3 observations)
-2. Top 2 areas to cut back
+2. Top 3 areas to cut back
 3. One savings strategy from the data
 Under 200 words. Use ₱.
 """
     return _chat(system, prompt)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 # 5. FORECAST ADVICE
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
 
 def generate_forecast_advice(monthly_savings: float, estimated_months) -> str:
     timeline = f"~{estimated_months:.1f} months" if estimated_months is not None \
@@ -328,10 +350,21 @@ Under 150 words. Use ₱.
     return _chat(system, prompt)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. FINANCE-ONLY CHATBOT WITH MEMORY & PERSONALIZATION
-#    Extended scope: banks, investments, financial products, loans, etc.
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. FINANCE-ONLY CHATBOT WITH MEMORY, PERSONALIZATION & WEB SEARCH TOOLS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _execute_agent_market_search(query: str) -> str:
+    """Autonomously searches the web to extract real-world Philippine prices or banking news."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            # Look up localized pricing trends or financial details
+            results = [r['body'] for r in ddgs.text(f"{query} Philippines", max_results=3)]
+            return "\n".join(results) if results else ""
+    except Exception:
+        return ""
+
 
 def financial_chatbot_with_memory(
     username: str,
@@ -355,6 +388,19 @@ Action Plan:
 {plan_text}
 """
 
+    # --- AGENTIC LEVEL BONUS: AUTOMATED VALUE DETECTOR & SEARCH TRIGGER ---
+    search_context_block = ""
+    msg_lower = user_message.lower()
+    
+    # Check if user is asking about an item, concert, or product price comparison
+    trigger_words = ["afford", "price", "how much", "cost", "ticket", "buy", "versus", "better interest"]
+    if any(word in msg_lower for word in trigger_words):
+        # Isolate semantic nouns to generate a highly specific search query
+        search_query = user_message.replace("can I afford", "").replace("how much is", "").strip()
+        search_results = _execute_agent_market_search(search_query)
+        if search_results:
+            search_context_block = f"\nREAL-TIME AGENT WEB SEARCH CONTEXT (LIVE BASING):\n{search_results}\n"
+
     system = f"""
 You are Financial AI Agent — a personalized financial coach for Filipinos.
 TODAY: {_today()}
@@ -365,37 +411,20 @@ SCOPE RULES:
   • Budgeting, savings strategies, expense management
   • Goal planning and progress tracking
   • Debt management, loan comparisons, interest rates
-  • Philippine banking products: GCash, Maya, MariBank, traditional banks (BPI, BDO, Metrobank, UnionBank, etc.)
+  • Philippine banking products: GCash, Maya, MariBank, traditional banks (BPI, BDO, etc.)
   • Savings accounts, time deposits, UITF, mutual funds, stock market basics (PSE)
-  • Cryptocurrency risks and considerations
-  • Insurance (life, health, property)
-  • Credit cards, buy-now-pay-later services
-  • Side hustles and income-boosting ideas
-  • Salary negotiation tactics
-  • Emergency fund planning
   • Philippine-specific financial tips (SSS, Pag-IBIG, PhilHealth)
-  • Any comparison of financial products or services (e.g., "Is MariBank better than traditional banks?")
-  • Inflation, cost of living, market prices in the Philippines
-  • Financial literacy concepts
-
-- When asked about specific banks or financial products (e.g., "Is MariBank a good savings bank?"),
-  provide a balanced, helpful comparison including interest rates, pros, cons, and a personalized
-  recommendation based on the user's profile and goals.
-
-- If the user asks something COMPLETELY unrelated to money, finances, or economic well-being
-  (e.g., cooking recipes, sports scores, coding questions unrelated to finance),
-  politely redirect: "I'm your finance coach — I can best help with money-related questions.
-  Is there a financial topic I can help you with?"
+  • Inflation, cost of living, ticket prices, and market parameters in the Philippines
 
 - Always personalize answers using the user's actual financial data below when relevant.
+- Treat the provided Web Search Context as environmental ground truth to extract missing product or ticket prices.
 - Be concise (≤300 words), warm, practical, and encouraging.
 - Use ₱ for Philippine Peso amounts.
-- Reference the user's specific income, spending, or goals when it adds value.
-- Cite Philippine-specific context when discussing products, banks, or services.
 
 USER FINANCIAL PROFILE:
 {current_context}
 {analysis_block}
+{search_context_block}
 """
     try:
         client = _get_client()
@@ -403,6 +432,7 @@ USER FINANCIAL PROFILE:
         for role, msg in chat_history[-20:]:
             messages.append({"role": role, "content": msg})
         messages.append({"role": "user", "content": user_message})
+        
         r = client.chat.completions.create(
             model="gpt-4o-mini", messages=messages,
             temperature=0.65, max_tokens=700

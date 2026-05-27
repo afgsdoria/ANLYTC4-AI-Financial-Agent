@@ -11,7 +11,6 @@ import json
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-# ── Keyword → sensible default Philippine price (₱) ──────────────────────────
 _AMOUNT_HINTS = {
     "laptop":          50_000,
     "macbook":         90_000,

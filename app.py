@@ -22,15 +22,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, datetime
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    ZoneInfo = None
-
 from modules.database import (
     create_tables,
     save_user, get_user, set_onboarding_done,
-    set_file_context,
+    set_file_context, set_password,
+    hash_password, verify_password,
     add_expense, get_expenses, get_expenses_with_id,
     get_total_spending, delete_expense,
     save_goal, get_goals, get_active_goal, get_active_goals,
@@ -244,38 +240,10 @@ hr{border-color:#1E2A3A !important}
 def pesos(v): return f"₱{float(v):,.2f}"
 def shdr(t):  st.markdown(f'<div class="shdr">{t}</div>', unsafe_allow_html=True)
 
-def local_today() -> date:
-    if ZoneInfo is None:
-        return date.today()
-    try:
-        return datetime.now(ZoneInfo("Asia/Manila")).date()
-    except Exception:
-        return date.today()
-
 def compute_age(bday: date) -> int:
     """Return full years between bday and today."""
     today = date.today()
     return today.year - bday.year - ((today.month, today.day) < (bday.month, bday.day))
-
-
-EXPENSE_CATEGORIES = [
-    "Groceries",
-    "Telecommunication Bills",
-    "Investment",
-    "Insurance",
-    "Government Contribution",
-    "HMO",
-    "Food",
-    "Transportation",
-    "School",
-    "Shopping",
-    "Entertainment",
-    "Bills",
-    "Savings",
-    "Health",
-    "Other",
-]
-
 
 def pcfg():
     return dict(
@@ -408,12 +376,11 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
     """Generate PDF report and return (file_path, report_data_dict) for inline display."""
     spending_r = get_total_spending(uname)
     expenses_r = get_expenses(uname)
-    active_goals_r = get_active_goals(uname) or []
-    active_r   = active_goals_r[0] if active_goals_r else None
+    active_r   = get_active_goal(uname)
     score_r, level_r = calculate_financial_health_score(income, spending_r, savings)
     alerts_r = generate_spending_alerts(income, spending_r, expenses_r)
     recs_r   = generate_recommendations(income, spending_r, goal_amt,
-                                         savings, expenses_r, active_r, active_goals_r)
+                                         savings, expenses_r, active_r)
     advice_r = generate_financial_advice(
         uname, st.session_state.user_type, income, goal_amt,
         savings, spending_r, expenses_r, active_r,
@@ -424,7 +391,7 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
         recommendations=recs_r, alerts=alerts_r,
         monthly_income=income, total_spending=spending_r,
         current_savings=savings, savings_goal=goal_amt,
-        active_goals=active_goals_r,
+        active_goals=[active_r] if active_r else [],
     )
     report_data = {
         "score":          score_r,
@@ -438,7 +405,6 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
         "recommendations":recs_r,
         "advice":         advice_r,
         "active_goal":    active_r,
-        "active_goals":   active_goals_r,
         "generated_at":   datetime.now().strftime("%B %d, %Y %I:%M %p"),
     }
     return pdf_path, report_data
@@ -458,25 +424,6 @@ if st.session_state.app_stage == "landing":
       </p>
     </div>
     """, unsafe_allow_html=True)
-
-    st.markdown(
-        '<p style="text-align:center;color:#64748B;font-size:.9rem;margin-bottom:6px">'
-        'Enter a username to get started or log back in</p>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    landing_error_slot = st.empty()
-
-    lc, mc, rc = st.columns([2, 2, 2])
-    with mc:
-        uinput = st.text_input("Username", placeholder="e.g. juan_dela_cruz",
-                               label_visibility="collapsed")
-        b1, b2 = st.columns(2)
-        go_new = b1.button("🚀 Create Account", use_container_width=True)
-        go_log = b2.button("🔐 Login",          use_container_width=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
     feats = [
         ("🤖", "Agentic Analysis",      "Multi-step AI reasoning engine with decision rules that builds a personalized plan to reach your goal — autonomously."),
@@ -498,40 +445,91 @@ if st.session_state.app_stage == "landing":
                 unsafe_allow_html=True,
             )
 
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(
+        '<p style="text-align:center;color:#64748B;font-size:.9rem;margin-bottom:6px">'
+        'Enter your credentials to get started or log back in</p>',
+        unsafe_allow_html=True,
+    )
+
+    lc, mc, rc = st.columns([2, 2, 2])
+    with mc:
+        uinput = st.text_input(
+            "Username", placeholder="e.g. juan_dela_cruz",
+            label_visibility="collapsed",
+            key="land_username",
+        )
+        pinput = st.text_input(
+            "Password", placeholder="Enter password",
+            type="password",
+            label_visibility="collapsed",
+            key="land_password",
+        )
+        b1, b2 = st.columns(2)
+        go_new = b1.button("🚀 Create Account", use_container_width=True)
+        go_log = b2.button("🔐 Login",          use_container_width=True)
+
     if go_new or go_log:
         name = uinput.strip()
-        landing_error = None
+        pwd  = pinput.strip()
+
         if not name:
-            landing_error = "Please enter a username."
+            st.error("⚠️ Please enter a username.")
+        elif not pwd:
+            st.error("⚠️ Please enter a password.")
+        elif len(pwd) < 6:
+            st.error("⚠️ Password must be at least 6 characters.")
         else:
             existing = get_user(name)
-            if go_new and existing:
-                landing_error = "This username already exists. Please log in with it or choose a different username."
-            elif existing and existing.get("onboarding_done"):
-                _load_user_into_session(existing, name)
-                cached = get_latest_ai_analysis(name)
-                if cached[0]:
-                    try:
-                        plan = json.loads(cached[1]) if cached[1] else []
-                        st.session_state.ai_analysis = {
-                            "health_summary": cached[0],
-                            "step_plan": plan,
-                            "spending_habits": "",
-                            "risk_flags": [],
-                            "chart_insights": "",
-                            "forecast_narrative": "",
-                            "chart_data": {},
-                        }
-                    except Exception:
-                        pass
-                st.session_state.app_stage = "dashboard"
-                st.rerun()
-            else:
-                st.session_state.username  = name
-                st.session_state.app_stage = "onboard"
-                st.rerun()
-        if landing_error:
-            landing_error_slot.error(landing_error)
+
+            # ── CREATE ACCOUNT ────────────────────────────────────────────
+            if go_new:
+                if existing:
+                    st.error("❌ Username already exists. Please log in instead.")
+                else:
+                    # Store username + hashed password, proceed to onboarding
+                    st.session_state.username      = name
+                    st.session_state.pending_pwd   = hash_password(pwd)
+                    st.session_state.app_stage     = "onboard"
+                    st.rerun()
+
+            # ── LOGIN ─────────────────────────────────────────────────────
+            elif go_log:
+                if not existing:
+                    st.error("❌ Username not found. Please create an account first.")
+                else:
+                    stored_hash = existing.get("password_hash")
+
+                    # Legacy accounts with no password: accept any password
+                    # and set it as their new password automatically
+                    if not stored_hash:
+                        set_password(name, pwd)
+                        stored_hash = hash_password(pwd)
+
+                    if not verify_password(pwd, stored_hash):
+                        st.error("❌ Incorrect password. Please try again.")
+                    else:
+                        _load_user_into_session(existing, name)
+                        cached = get_latest_ai_analysis(name)
+                        if cached[0]:
+                            try:
+                                plan = json.loads(cached[1]) if cached[1] else []
+                                st.session_state.ai_analysis = {
+                                    "health_summary": cached[0],
+                                    "step_plan": plan,
+                                    "spending_habits": "",
+                                    "risk_flags": [],
+                                    "chart_insights": "",
+                                    "forecast_narrative": "",
+                                    "chart_data": {},
+                                }
+                            except Exception:
+                                pass
+                        if existing.get("onboarding_done"):
+                            st.session_state.app_stage = "dashboard"
+                        else:
+                            st.session_state.app_stage = "onboard"
+                        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -583,6 +581,7 @@ elif st.session_state.app_stage == "onboard":
                 help="We'll compute your age automatically from this.",
             )
             age = compute_age(bday_input)
+            st.caption(f"🎂 Age computed: **{age} years old**")
 
         # ── SECTION 2: Your Finances ──────────────────────────────────────
         st.markdown("#### 💵 Your Finances")
@@ -668,6 +667,7 @@ elif st.session_state.app_stage == "onboard":
             age             = int(age),
             file_context    = file_ctx,
             onboarding_done = 0,
+            password_hash   = st.session_state.get("pending_pwd"),
         )
         st.session_state.user_type       = user_type
         st.session_state.age             = int(age)
@@ -739,6 +739,12 @@ elif st.session_state.app_stage == "dashboard":
     # ── SIDEBAR ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(f"## 💰 Hi, {uname}!")
+        bday_display = f" · 🎂 {st.session_state.birthday}" if st.session_state.get("birthday") else ""
+        st.markdown(
+            f"<small style='color:#4A5568'>{st.session_state.user_type} · "
+            f"Age {st.session_state.age}{bday_display}</small>",
+            unsafe_allow_html=True,
+        )
         st.markdown("---")
 
         # ── Active Goal(s) Progress ───────────────────────────────────────
@@ -769,21 +775,18 @@ elif st.session_state.app_stage == "dashboard":
 
         # Expense Logger
         st.markdown("### ➕ Log Expense")
-        if "sb_date" not in st.session_state or st.session_state.get("sb_date_needs_reset"):
-            st.session_state.sb_date = local_today()
-            st.session_state.sb_date_needs_reset = False
-
         exp_cat = st.selectbox(
             "Category",
-            EXPENSE_CATEGORIES,
+            ["Food","Transportation","School","Shopping",
+             "Entertainment","Bills","Savings","Health","Other"],
             key="sb_cat",
         )
         exp_amt  = st.number_input("Amount (₱)", min_value=0.01, step=10.0,
                                     format="%.2f", key="sb_amt")
         exp_date = st.date_input(
             "Date",
-            value=st.session_state.sb_date,
-            max_value=local_today(),
+            value=date.today(),
+            max_value=date.today(),
             key="sb_date",
         )
 
@@ -818,8 +821,6 @@ elif st.session_state.app_stage == "dashboard":
                         st.session_state.sidebar_exp_success = (
                             f"✅ Successfully logged {pesos(exp_amt)} ({exp_cat}) on {exp_date}!"
                         )
-
-                    st.session_state.sb_date_needs_reset = True
 
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
@@ -895,7 +896,7 @@ elif st.session_state.app_stage == "dashboard":
 
         # Health Score
         score, level = calculate_financial_health_score(income, spending, savings)
-        score_col = "#22C55E" if score >= 80 else "#FBBF24" if score >= 60 else "#F87171"
+        score_col = "#22C55E" if score >= 80 else "#F59E0B" if score >= 60 else "#EF4444"
         c_sc, c_ga = st.columns([1, 2])
 
         with c_sc:
@@ -916,7 +917,7 @@ elif st.session_state.app_stage == "dashboard":
                 domain={"x": [0, 1], "y": [0, 1]},
                 gauge={
                     "axis": {"range": [0, 100], "tickcolor": "#2D3B55", "tickfont": {"color": "#64748B"}},
-                    "bar": {"color": score_col, "thickness": 0.32},
+                    "bar": {"color": score_col, "thickness": 0.28},
                     "bgcolor": "#131B2E", "bordercolor": "#1E2A3A",
                     "steps": [
                         {"range": [0, 40],  "color": "#1C0808"},
@@ -955,7 +956,7 @@ elif st.session_state.app_stage == "dashboard":
                 st.markdown(badges, unsafe_allow_html=True)
             else:
                 recs = generate_recommendations(income, spending, goal_amt,
-                                                savings, expenses, active_goal, active_goals)
+                                                savings, expenses, active_goal)
                 for r in recs[:3]:
                     st.info(r)
 
@@ -1069,27 +1070,24 @@ elif st.session_state.app_stage == "dashboard":
                 c3.metric("Remaining", pesos(rd["remaining"]))
                 c4.metric("Current Savings", pesos(rd["savings"]))
 
-                active_goals_for_report = rd.get("active_goals") or []
-                if active_goals_for_report:
-                    for ag in active_goals_for_report:
-                        prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
-                        st.markdown(
-                            f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
-                            f'padding:14px 18px;margin:12px 0">'
-                            f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
-                            f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
-                            f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
-                            f'<div style="background:#1E2A3A;border-radius:4px;height:8px;overflow:hidden">'
-                            f'  <div style="width:{prog_pct*100:.1f}%;height:8px;'
-                            f'background:linear-gradient(90deg,#2563EB,#60A5FA);border-radius:4px"></div>'
-                            f'</div>'
-                            f'<p style="color:#60A5FA;font-size:.75rem;font-weight:700;margin:4px 0 0">'
-                            f'{pesos(rd["savings"])} saved &nbsp;·&nbsp; {prog_pct*100:.0f}% complete</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.info("No active financial goal set.")
+                if rd.get("active_goal"):
+                    ag = rd["active_goal"]
+                    prog_pct = min(1.0, rd["savings"] / ag["target_amount"]) if ag["target_amount"] else 0
+                    st.markdown(
+                        f'<div style="background:#0C1422;border:1px solid #1E2A3A;border-radius:10px;'
+                        f'padding:14px 18px;margin:12px 0">'
+                        f'<p style="color:#60A5FA;font-weight:700;margin:0 0 6px">🎯 Active Goal: {ag["goal_name"]}</p>'
+                        f'<p style="color:#94A3B8;font-size:.84rem;margin:0 0 8px">'
+                        f'Target: {pesos(ag["target_amount"])} &nbsp;·&nbsp; Deadline: {ag["deadline"]}</p>'
+                        f'<div style="background:#1E2A3A;border-radius:4px;height:8px;overflow:hidden">'
+                        f'  <div style="width:{prog_pct*100:.1f}%;height:8px;'
+                        f'background:linear-gradient(90deg,#2563EB,#60A5FA);border-radius:4px"></div>'
+                        f'</div>'
+                        f'<p style="color:#60A5FA;font-size:.75rem;font-weight:700;margin:4px 0 0">'
+                        f'{pesos(rd["savings"])} saved &nbsp;·&nbsp; {prog_pct*100:.0f}% complete</p>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
 
                 st.markdown("---")
                 shdr("🚨 Report Alerts")
@@ -1158,7 +1156,7 @@ elif st.session_state.app_stage == "dashboard":
         st.markdown("---")
         shdr("💡 Smart Recommendations")
         expenses = get_expenses(uname)
-        recs = generate_recommendations(income, spending, goal_amt, savings, expenses, active_goal, all_active)
+        recs = generate_recommendations(income, spending, goal_amt, savings, expenses, active_goal)
         for r in recs:
             st.info(r)
 
@@ -1179,42 +1177,29 @@ elif st.session_state.app_stage == "dashboard":
             e2.metric("Total Spent", pesos(total))
             st.markdown("---")
 
-            shdr("📅 Daily Spending Trend")
-            df_t = df_all.copy()
-            df_t["Date"] = pd.to_datetime(df_t["Date"], errors="coerce")
-            df_t = df_t.dropna(subset=["Date"])
-            if not df_t.empty:
-                df_daily = df_t.groupby("Date")["Amount"].sum().reset_index()
-                fig_t = px.area(df_daily, x="Date", y="Amount",
-                                 color_discrete_sequence=["#3B82F6"])
-                fig_t.update_traces(fill="tozeroy", fillcolor="rgba(59,130,246,0.15)")
-                fig_t.update_layout(height=260, margin=dict(t=20,b=20,l=20,r=20), **pcfg())
-                st.plotly_chart(fig_t, use_container_width=True)
-            st.markdown("---")
-
             cat_filter = st.multiselect(
                 "Filter by category",
                 options=sorted(df_all["Category"].unique()), default=[],
             )
             df_show = df_all if not cat_filter else df_all[df_all["Category"].isin(cat_filter)]
 
-            st.markdown("### Expense History")
-            st.dataframe(df_show["Date Category Amount".split()], use_container_width=True)
-
-            if not df_show.empty:
-                delete_options = [
-                    f"{int(row['ID'])} — {row['Date']} | {row['Category']} | {pesos(row['Amount'])}"
-                    for _, row in df_show.iterrows()
-                ]
-                delete_choice = st.selectbox(
-                    "Delete an expense",
-                    options=delete_options,
-                    key="delete_expense_choice",
-                    help="Select a transaction to remove it from the log.",
+            h1, h2, h3, h4 = st.columns([2, 3, 2, 1])
+            for col, lbl in zip([h1,h2,h3,h4], ["DATE","CATEGORY","AMOUNT",""]):
+                col.markdown(
+                    f"<span style='color:#60A5FA;font-size:.8rem;font-weight:700'>{lbl}</span>",
+                    unsafe_allow_html=True,
                 )
-                if st.button("🗑️ Delete selected expense"):
-                    expense_id = int(delete_choice.split(" — ", 1)[0])
-                    row = df_show[df_show["ID"] == expense_id].iloc[0]
+            st.markdown("<hr style='margin:4px 0 6px;border-color:#1E2A3A'>", unsafe_allow_html=True)
+
+            for _, row in df_show.iterrows():
+                c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
+                c1.markdown(f"<span style='color:#4A5568;font-size:.87rem'>{row['Date']}</span>",
+                             unsafe_allow_html=True)
+                c2.markdown(f"<span style='color:#CBD5E0;font-weight:600'>{row['Category']}</span>",
+                             unsafe_allow_html=True)
+                c3.markdown(f"<span style='color:#60A5FA;font-weight:700'>{pesos(row['Amount'])}</span>",
+                             unsafe_allow_html=True)
+                if c4.button("🗑️", key=f"del_{row['ID']}", help="Delete"):
                     if row["Category"] == "Savings":
                         new_savings = max(0.0, st.session_state.current_savings - float(row["Amount"]))
                         st.session_state.current_savings = new_savings
@@ -1231,12 +1216,24 @@ elif st.session_state.app_stage == "dashboard":
                             st.session_state.file_context,
                             1,
                         )
-                    delete_expense(expense_id)
+                    delete_expense(int(row["ID"]))
                     with st.spinner("Updating AI analysis…"):
                         _trigger_ai_analysis()
                     st.success("✅ Expense deleted successfully.")
                     st.rerun()
 
+            st.markdown("---")
+            shdr("📅 Daily Spending Trend")
+            df_t = df_all.copy()
+            df_t["Date"] = pd.to_datetime(df_t["Date"], errors="coerce")
+            df_t = df_t.dropna(subset=["Date"])
+            if not df_t.empty:
+                df_daily = df_t.groupby("Date")["Amount"].sum().reset_index()
+                fig_t = px.area(df_daily, x="Date", y="Amount",
+                                 color_discrete_sequence=["#3B82F6"])
+                fig_t.update_traces(fill="tozeroy", fillcolor="rgba(59,130,246,0.1)")
+                fig_t.update_layout(height=260, margin=dict(t=20,b=20,l=20,r=20), **pcfg())
+                st.plotly_chart(fig_t, use_container_width=True)
         else:
             st.info("No expenses yet. Use the sidebar to log your first expense!")
 
@@ -1294,6 +1291,27 @@ elif st.session_state.app_stage == "dashboard":
     with t_settings:
         st.markdown("## ⚙️ Settings")
 
+        # Change Password
+        shdr("🔒 Change Password")
+        with st.form("change_password_form"):
+            cp_current = st.text_input("Current Password",     type="password", key="cp_cur")
+            cp_new     = st.text_input("New Password",         type="password", key="cp_new")
+            cp_confirm = st.text_input("Confirm New Password", type="password", key="cp_conf")
+            if st.form_submit_button("🔒 Update Password", use_container_width=True):
+                user_data = get_user(uname)
+                stored    = user_data.get("password_hash") if user_data else None
+                if not stored or not verify_password(cp_current, stored):
+                    st.error("❌ Current password is incorrect.")
+                elif len(cp_new) < 6:
+                    st.error("⚠️ New password must be at least 6 characters.")
+                elif cp_new != cp_confirm:
+                    st.error("⚠️ New passwords do not match.")
+                else:
+                    set_password(uname, cp_new)
+                    st.success("✅ Password updated successfully!")
+
+        st.markdown("---")
+
         # Profile update
         shdr("👤 Update Profile")
         with st.form("settings_profile"):
@@ -1319,6 +1337,7 @@ elif st.session_state.app_stage == "dashboard":
                 help="Your age is computed automatically from this date.",
             )
             u_age  = compute_age(u_bday)
+            st.caption(f"🎂 Age computed: **{u_age} years old**")
             u_inc  = st.number_input("Monthly Income (₱)", min_value=0.0,
                                       value=float(income), step=500.0, format="%.2f")
             u_sav  = st.number_input("Current Savings (₱)", min_value=0.0,
@@ -1408,6 +1427,9 @@ elif st.session_state.app_stage == "dashboard":
         shdr("📋 Current Profile Summary")
         rows = [
             ("👤 Username",        uname),
+            ("🏷️ User Type",       st.session_state.user_type),
+            ("🎂 Birthday",        st.session_state.birthday if st.session_state.get("birthday") else "—"),
+            ("🔢 Age",             f"{st.session_state.age} years old"),
             ("💵 Monthly Income",  pesos(income)),
             ("🎯 Savings Target",  pesos(goal_amt)),
             ("🏦 Current Savings", pesos(savings)),

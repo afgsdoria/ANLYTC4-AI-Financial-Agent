@@ -1,5 +1,15 @@
+"""
+ai_engine.py — All OpenAI GPT calls with agentic reasoning
+Reasoning engine: multi-step planning, decision rules, autonomous analysis
+
+NEW: Web-search tool enabled for chatbot and goal parser so the agent can
+     look up real-time prices (concert tickets, gadgets, travel, etc.)
+     before answering affordability questions or extracting goal amounts.
+"""
+
 import os
 import json
+import re
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -24,6 +34,7 @@ def _today():
 
 
 def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
+    """Plain chat call — no tools."""
     try:
         r = _get_client().chat.completions.create(
             model="gpt-4o-mini",
@@ -37,26 +48,146 @@ def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
         return f"⚠️ AI Error: {e}"
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 1. AGENTIC FULL ANALYSIS  (reasoning engine + decision rules + planning)
-#    Returns JSON with keys: health_summary, spending_habits, risk_flags,
-#    step_plan, chart_insights, forecast_narrative, chart_data
-# ═══════════════════════════════════════════════════════════════════════════
+# ── Web-search tool definition (OpenAI function calling) ─────────────────────
+
+_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for real-time information such as current prices, "
+            "event ticket costs, product prices, exchange rates, and other "
+            "up-to-date data that the model may not have in its training data. "
+            "Use this whenever the user asks about the price of something specific "
+            "(concert tickets, gadgets, travel fares, etc.) or when you need a "
+            "current market price to answer an affordability question."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "A concise, specific search query. "
+                        "Examples: 'Saranggola concert Patron B ticket price Philippines 2025', "
+                        "'iPhone 16 price Philippines peso 2025', "
+                        "'Manila to Tokyo airfare economy 2025'."
+                    ),
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _perform_web_search(query: str) -> str:
+    """
+    Execute a web search via the Responses API (search_preview) and return
+    a plain-text summary of the results.
+
+    Falls back gracefully if the search model is unavailable, keeping the
+    chatbot functional even in restricted environments.
+    """
+    try:
+        client = _get_client()
+
+        # Use the Responses API with web_search_preview tool
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            tools=[{"type": "web_search_preview"}],
+            input=query,
+        )
+
+        # Extract text from the response output
+        for block in response.output:
+            if hasattr(block, "type") and block.type == "message":
+                for content in block.content:
+                    if hasattr(content, "type") and content.type == "output_text":
+                        return content.text.strip()
+
+        return "No search results found."
+
+    except Exception as e:
+        # Graceful fallback — let the LLM note it couldn't search
+        return f"[Search unavailable: {e}]"
+
+
+def _chat_with_search(
+    system: str,
+    messages: list,
+    temperature: float = 0.65,
+    max_tokens: int = 1000,
+) -> str:
+    """
+    Agentic chat call that:
+      1. Sends the conversation to GPT-4o-mini with a web_search function tool.
+      2. If the model decides to call web_search, executes the search and
+         feeds the result back.
+      3. Returns the final text reply.
+
+    Supports up to 3 search rounds to handle multi-hop queries.
+    """
+    try:
+        client = _get_client()
+        msgs = list(messages)
+
+        for _ in range(3):  # max 3 search rounds
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=msgs,
+                tools=[_WEB_SEARCH_TOOL],
+                tool_choice="auto",
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            choice = response.choices[0]
+            msg = choice.message
+
+            # No tool call → final answer
+            if not msg.tool_calls:
+                return (msg.content or "").strip()
+
+            # Process all tool calls in this round
+            msgs.append(msg)  # add assistant message with tool_calls
+            for tc in msg.tool_calls:
+                if tc.function.name == "web_search":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        query = args.get("query", "")
+                    except Exception:
+                        query = tc.function.arguments
+
+                    search_result = _perform_web_search(query)
+
+                    msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": search_result,
+                    })
+
+        # Safety: one final call without tools to force a text answer
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    except Exception as e:
+        return f"⚠️ AI Error: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. AGENTIC FULL ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def run_full_agent_analysis(
     username, user_type, age, income, current_savings,
     savings_goal, total_spending, expenses,
     active_goal=None, file_context=None
 ) -> dict:
-    """
-    Autonomous multi-step reasoning:
-      Step 1 — Assess financial health
-      Step 2 — Identify spending patterns & risks
-      Step 3 — Build a concrete step-by-step plan
-      Step 4 — Generate chart narrative & forecast commentary
-      Step 5 — Generate structured chart data for AI-driven visualization
-    Returns a structured dict for the dashboard.
-    """
     exp_lines = "\n".join(
         f"  • {cat}: ₱{amt:,.2f} on {dt}"
         for cat, amt, dt in (expenses or [])[:30]
@@ -132,7 +263,6 @@ Return ONLY this JSON (no markdown fences, no extra text):
 """
     raw = _chat(system, user_prompt, temperature=0.4, max_tokens=2200)
 
-    # Strip markdown fences if model adds them
     raw = raw.strip()
     if raw.startswith("```"):
         parts = raw.split("```")
@@ -143,30 +273,15 @@ Return ONLY this JSON (no markdown fences, no extra text):
 
     try:
         result = json.loads(raw)
-        
-        # Validate and filter chart_data structure
         cd = result.get("chart_data", {})
         cats = cd.get("categories", [])
         amts = cd.get("amounts", [])
-        
-        if cats and amts and len(cats) == len(amts):
-            # Strict adjustment: filter out zero logs so they do not render in dashboard
-            filtered_cats = []
-            filtered_amts = []
-            for c, a in zip(cats, amts):
-                if float(a) > 0:
-                    filtered_cats.append(c)
-                    filtered_amts.append(float(a))
-            result["chart_data"]["categories"] = filtered_cats
-            result["chart_data"]["amounts"] = filtered_amts
-        else:
-            # Build from raw expenses as baseline fallback
+        if not cats or not amts or len(cats) != len(amts):
             if expenses:
                 from collections import defaultdict
                 cat_totals = defaultdict(float)
                 for c, a, _ in expenses:
-                    if a > 0:
-                        cat_totals[c] += a
+                    cat_totals[c] += a
                 result["chart_data"] = {
                     "categories": list(cat_totals.keys()),
                     "amounts": list(cat_totals.values()),
@@ -175,16 +290,13 @@ Return ONLY this JSON (no markdown fences, no extra text):
             else:
                 result["chart_data"] = {}
         return result
-
     except Exception:
-        # Fallback dictionary safety net to keep pipeline from crashing on structural anomalies
         fallback_chart = {}
         if expenses:
             from collections import defaultdict
             cat_totals = defaultdict(float)
             for c, a, _ in expenses:
-                if a > 0:
-                    cat_totals[c] += a
+                cat_totals[c] += a
             fallback_chart = {
                 "categories": list(cat_totals.keys()),
                 "amounts": list(cat_totals.values()),
@@ -204,19 +316,11 @@ Return ONLY this JSON (no markdown fences, no extra text):
         }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. AI CHART DATA GENERATOR (standalone — for dashboard refresh)
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. AI CHART DATA GENERATOR
+# ══════════════════════════════════════════════════════════════════════════════
 
-def generate_ai_charts(
-    expenses: list,
-    income: float,
-    user_type: str,
-) -> dict:
-    """
-    Generate AI-structured chart data from expenses.
-    Filters out categories with zero transactions.
-    """
+def generate_ai_charts(expenses: list, income: float, user_type: str) -> dict:
     if not expenses:
         return {}
 
@@ -245,36 +349,23 @@ Return ONLY this JSON:
 """
     raw = _chat(system, prompt, temperature=0.2, max_tokens=400)
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-    
     try:
         data = json.loads(raw)
         if len(data.get("categories", [])) == len(data.get("amounts", [])):
-            # Filter zero totals to keep dashboard clean
-            f_cats = []
-            f_amts = []
-            for c, a in zip(data["categories"], data["amounts"]):
-                if float(a) > 0:
-                    f_cats.append(c)
-                    f_amts.append(float(a))
-            return {
-                "categories": f_cats, 
-                "amounts": f_amts, 
-                "insight": data.get("insight", "")
-            }
+            return data
     except Exception:
         pass
 
-    # Fallback aggregation matching the exact zero-filter rule
     return {
-        "categories": [c for c, a in cat_totals.items() if a > 0],
-        "amounts": [a for c, a in cat_totals.items() if a > 0],
+        "categories": list(cat_totals.keys()),
+        "amounts": list(cat_totals.values()),
         "insight": "Chart built from your logged expense data.",
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # 3. FINANCIAL ADVICE (for PDF report)
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def generate_financial_advice(
     username, user_type, income, savings_goal,
@@ -307,9 +398,9 @@ Use ₱ for peso amounts.
     return _chat(system, prompt)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # 4. UPLOADED FILE ANALYSIS
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def analyze_uploaded_financial_file(file_content: str) -> str:
     system = "You are a financial data analyst for Filipinos."
@@ -321,16 +412,16 @@ Analyze this uploaded financial tracker:
 
 Provide:
 1. Key spending patterns (2-3 observations)
-2. Top 3 areas to cut back
+2. Top 2 areas to cut back
 3. One savings strategy from the data
 Under 200 words. Use ₱.
 """
     return _chat(system, prompt)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # 5. FORECAST ADVICE
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def generate_forecast_advice(monthly_savings: float, estimated_months) -> str:
     timeline = f"~{estimated_months:.1f} months" if estimated_months is not None \
@@ -350,21 +441,9 @@ Under 150 words. Use ₱.
     return _chat(system, prompt)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. FINANCE-ONLY CHATBOT WITH MEMORY, PERSONALIZATION & WEB SEARCH TOOLS
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _execute_agent_market_search(query: str) -> str:
-    """Autonomously searches the web to extract real-world Philippine prices or banking news."""
-    try:
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            # Look up localized pricing trends or financial details
-            results = [r['body'] for r in ddgs.text(f"{query} Philippines", max_results=3)]
-            return "\n".join(results) if results else ""
-    except Exception:
-        return ""
-
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. FINANCE CHATBOT — WITH MEMORY, WEB SEARCH, AND REAL-TIME PRICING
+# ══════════════════════════════════════════════════════════════════════════════
 
 def financial_chatbot_with_memory(
     username: str,
@@ -373,6 +452,13 @@ def financial_chatbot_with_memory(
     current_context: str = "",
     ai_analysis: dict = None,
 ) -> str:
+    """
+    Personalized finance chatbot with:
+    - Full conversation memory
+    - Web search tool for real-time prices (concerts, gadgets, travel, etc.)
+    - Affordability analysis using the user's actual financial profile
+    - Philippine-specific financial guidance
+    """
     analysis_block = ""
     if ai_analysis:
         plan_text = "\n".join(
@@ -388,55 +474,164 @@ Action Plan:
 {plan_text}
 """
 
-    # --- AGENTIC LEVEL BONUS: AUTOMATED VALUE DETECTOR & SEARCH TRIGGER ---
-    search_context_block = ""
-    msg_lower = user_message.lower()
-    
-    # Check if user is asking about an item, concert, or product price comparison
-    trigger_words = ["afford", "price", "how much", "cost", "ticket", "buy", "versus", "better interest"]
-    if any(word in msg_lower for word in trigger_words):
-        # Isolate semantic nouns to generate a highly specific search query
-        search_query = user_message.replace("can I afford", "").replace("how much is", "").strip()
-        search_results = _execute_agent_market_search(search_query)
-        if search_results:
-            search_context_block = f"\nREAL-TIME AGENT WEB SEARCH CONTEXT (LIVE BASING):\n{search_results}\n"
-
-    system = f"""
+    system_content = f"""
 You are Financial AI Agent — a personalized financial coach for Filipinos.
 TODAY: {_today()}
 
-SCOPE RULES:
-- Answer ANY question that helps the user make better financial decisions or reach their goal.
-  This includes (but is not limited to):
-  • Budgeting, savings strategies, expense management
-  • Goal planning and progress tracking
-  • Debt management, loan comparisons, interest rates
-  • Philippine banking products: GCash, Maya, MariBank, traditional banks (BPI, BDO, etc.)
-  • Savings accounts, time deposits, UITF, mutual funds, stock market basics (PSE)
-  • Philippine-specific financial tips (SSS, Pag-IBIG, PhilHealth)
-  • Inflation, cost of living, ticket prices, and market parameters in the Philippines
+═══════════════════════════════════════════════════
+WEB SEARCH CAPABILITY & WHEN TO USE IT
+═══════════════════════════════════════════════════
+You have access to a web_search function tool. Use it proactively whenever:
 
-- Always personalize answers using the user's actual financial data below when relevant.
-- Treat the provided Web Search Context as environmental ground truth to extract missing product or ticket prices.
-- Be concise (≤300 words), warm, practical, and encouraging.
+1. The user asks about the price/cost of ANYTHING specific:
+   - Concert tickets (e.g. "Saranggola concert Patron B price")
+   - Gadgets or electronics (e.g. "iPhone 16 price Philippines")
+   - Appliances, furniture, clothing brands
+   - Travel fares (flights, hotels, tours)
+   - Food/restaurant prices
+   - Event tickets (sports, shows, theme parks)
+   - Real estate, vehicles
+
+2. Affordability questions ("can I afford...", "is _____ within my budget?")
+   → ALWAYS search for the current price first, THEN compute affordability.
+
+3. Current exchange rates, fuel prices, or any market data
+
+SEARCH STRATEGY:
+- Be specific: include the exact product/event name + "price Philippines" + current year
+- For concerts: search "[artist] concert [city/venue] ticket price [tier] [year]"
+- For gadgets: search "[product model] price Philippines peso [year]"
+- If first search is vague, do a follow-up search with more detail
+- After getting the price, ALWAYS compute: can the user afford it right now?
+  And how long would it take them to save for it?
+
+AFFORDABILITY FORMULA (use the user's real data below):
+  • Immediate: Can they pay from current savings + remaining monthly balance?
+  • Short-term: Months needed = (price - available funds) / monthly net savings
+  • Show both the "comfortable" (no sacrifice) and "stretch" (sacrifice) timelines
+
+═══════════════════════════════════════════════════
+SCOPE & BEHAVIOR
+═══════════════════════════════════════════════════
+- Answer ANY question that helps the user make better financial decisions.
+  Covers: budgeting, savings, debt, Philippine banks (GCash, Maya, MariBank,
+  BPI, BDO, Metrobank, UnionBank, etc.), UITF, mutual funds, PSE stocks,
+  crypto risks, insurance, credit cards, BNPL, side hustles, salary negotiation,
+  SSS, Pag-IBIG, PhilHealth, inflation, cost of living, financial literacy.
+- For non-finance questions, politely redirect:
+  "I'm your finance coach — I can best help with money-related questions."
+- Always personalize using the user's actual financial data.
+- Be concise (≤350 words), warm, practical, and encouraging.
 - Use ₱ for Philippine Peso amounts.
+- Show step-by-step calculations when doing affordability analysis.
+- Cite where you found the price when you use web search.
 
 USER FINANCIAL PROFILE:
 {current_context}
 {analysis_block}
-{search_context_block}
 """
+
     try:
         client = _get_client()
-        messages = [{"role": "system", "content": system}]
+        messages = [{"role": "system", "content": system_content}]
+
+        # Build conversation history
         for role, msg in chat_history[-20:]:
             messages.append({"role": role, "content": msg})
         messages.append({"role": "user", "content": user_message})
-        
-        r = client.chat.completions.create(
-            model="gpt-4o-mini", messages=messages,
-            temperature=0.65, max_tokens=700
+
+        return _chat_with_search(
+            system=system_content,
+            messages=messages,
+            temperature=0.65,
+            max_tokens=900,
         )
-        return r.choices[0].message.content.strip()
+
     except Exception as e:
         return f"⚠️ Chatbot error: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. REAL-TIME PRICE LOOKUP (standalone — for goal engine)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def lookup_price_for_goal(goal_text: str, monthly_income: float) -> dict:
+    """
+    Uses web search to find the real-time market price for a goal item.
+    Returns {"found": bool, "price": float, "source_note": str, "search_query": str}
+
+    Called by goal_engine.py before falling back to keyword defaults.
+    """
+    # Build a smart search query from the goal text
+    query_prompt = f"""
+Extract the specific item/product/event from this goal description and create
+the best Google search query to find its current price in the Philippines:
+
+Goal: "{goal_text}"
+
+Rules:
+- Be specific (include brand, tier, model, event name if mentioned)
+- Always append "price Philippines peso 2025" or the relevant year
+- For concerts: include artist name + venue/city + ticket tier
+- For travel: include destination + "airfare" or "tour package"
+- Return ONLY the search query string, nothing else.
+"""
+    search_query = _chat(
+        "You are a search query generator. Return only the search query, no explanation.",
+        query_prompt,
+        temperature=0.1,
+        max_tokens=60,
+    ).strip().strip('"')
+
+    if not search_query or len(search_query) < 5:
+        return {"found": False, "price": 0.0, "source_note": "", "search_query": ""}
+
+    # Perform the web search
+    search_result = _perform_web_search(search_query)
+
+    if "[Search unavailable" in search_result or "No search results" in search_result:
+        return {"found": False, "price": 0.0, "source_note": search_result, "search_query": search_query}
+
+    # Ask the AI to extract the price from search results
+    extract_prompt = f"""
+Goal: "{goal_text}"
+Monthly income for context: ₱{monthly_income:,.2f}
+
+Search results:
+{search_result[:2000]}
+
+Extract the most relevant price for the goal item in Philippine Pesos.
+
+Rules:
+1. Return the price as a plain number (no ₱ symbol, no commas).
+2. If multiple price tiers exist, use the one that matches the goal description.
+   If no tier is specified, use the mid-range price.
+3. If converting from USD, use approximate rate: 1 USD = 58 PHP.
+4. If no price found at all, return 0.
+5. Also return a short one-sentence source note explaining what price you found.
+
+Return ONLY valid JSON:
+{{"price": 0, "source_note": "e.g. Patron B ticket found at ₱X,XXX on TicketNet"}}
+"""
+    raw = _chat(
+        "You are a price extraction assistant. Return only valid JSON.",
+        extract_prompt,
+        temperature=0.0,
+        max_tokens=120,
+    ).strip().replace("```json", "").replace("```", "").strip()
+
+    try:
+        data = json.loads(raw)
+        price = float(data.get("price", 0) or 0)
+        source_note = str(data.get("source_note", "") or "")
+        if price > 0:
+            return {
+                "found": True,
+                "price": price,
+                "source_note": source_note,
+                "search_query": search_query,
+            }
+    except Exception:
+        pass
+
+    return {"found": False, "price": 0.0, "source_note": "", "search_query": search_query}

@@ -1,8 +1,18 @@
 """
 goal_engine.py
 Converts natural-language goal statements into structured dicts.
-AI is primary parser; regex is the fallback.
-Handles: no amount, no deadline, vague goals.
+
+Priority order for price resolution:
+  1. Explicitly stated amount in the goal text
+  2. AI parser (gpt-4o-mini with context)           ← may call web search
+  3. Web search via lookup_price_for_goal()          ← real-time market price
+  4. Keyword → default Philippine price table        ← last resort
+  5. Generic default ₱20,000
+
+For deadlines:
+  - Explicit timeframe / month in text
+  - AI estimate based on income × 20% savings rate
+  - Regex fallback
 """
 
 import re
@@ -11,6 +21,7 @@ import json
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+# ── Keyword → sensible default Philippine price (₱) ──────────────────────────
 _AMOUNT_HINTS = {
     "laptop":          50_000,
     "macbook":         90_000,
@@ -63,6 +74,19 @@ _MONTH_PAT = (
     r"september|october|november|december|"
     r"jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec"
 )
+
+
+# ── Helpers that indicate a user already stated an explicit amount ────────────
+
+def _has_explicit_amount(text: str) -> bool:
+    """Return True if text contains an explicit peso amount or large number."""
+    if re.search(r"[₱Pp]\s?[\d,]+", text):
+        return True
+    if re.search(r"\b([\d]{1,3}(?:,[\d]{3})+(?:\.\d+)?)\b", text):
+        return True
+    if re.search(r"\b(\d{4,}(?:\.\d+)?)\b", text):
+        return True
+    return False
 
 
 # ── Regex helpers ─────────────────────────────────────────────────────────────
@@ -164,6 +188,10 @@ def _estimate_deadline(target_amount: float, monthly_income: float, today: datet
 # ── AI parser (primary) ───────────────────────────────────────────────────────
 
 def _ai_parse(text: str, monthly_income: float, today: datetime) -> dict | None:
+    """
+    AI-powered goal parser. Uses gpt-4o-mini with Philippine market context.
+    Does NOT call web search here — that is handled separately in extract_goal_from_text.
+    """
     try:
         from openai import OpenAI
         from dotenv import load_dotenv
@@ -184,13 +212,10 @@ Rules:
 1. goal_name: short, descriptive (e.g. "Laptop Fund", "Travel to Japan", "Emergency Fund")
 2. target_amount: peso amount as a number.
    - If explicitly stated, use it.
-   - If NOT stated, infer from the item type using Philippine market prices.
-     Common defaults: laptop=50000, phone=25000, iphone=65000, travel/vacation=30000,
-     emergency fund=50000, car=700000, wedding=200000, business capital=100000,
-     concert ticket=5000, gadget=20000, general savings=20000.
+   - If NOT stated, return 0 — the caller will do a web search for the real price.
 3. deadline: YYYY-MM-DD string.
    - If a timeframe is given ("6 months", "by December 2026"), compute from today.
-   - If NO deadline is given, estimate: ceil(target_amount / (monthly_income * 0.20)) months from today.
+   - If NO deadline is given, return "" — the caller will estimate.
    - Minimum: 1 month from today. Never return a past date.
 
 Return ONLY valid JSON, no markdown fences:
@@ -220,9 +245,6 @@ Return ONLY valid JSON, no markdown fences:
             except ValueError:
                 deadline = ""
 
-        if not deadline:
-            deadline = _estimate_deadline(target_amount or 20_000, monthly_income, today)
-
         return {"goal_name": goal_name, "target_amount": target_amount, "deadline": deadline}
 
     except Exception:
@@ -231,24 +253,104 @@ Return ONLY valid JSON, no markdown fences:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def extract_goal_from_text(text: str, monthly_income: float = 0.0) -> dict:
+def extract_goal_from_text(
+    text: str,
+    monthly_income: float = 0.0,
+    use_web_search: bool = True,
+) -> dict:
     """
     Parse a natural-language goal into:
-        {"goal_name": str, "target_amount": float, "deadline": str}
-    AI is tried first; regex is the fallback.
-    Neither amount nor deadline is required from the user.
+        {
+          "goal_name": str,
+          "target_amount": float,
+          "deadline": str,
+          "price_source": str,   # e.g. "web_search", "user_stated", "ai_default", "keyword"
+          "price_note": str,     # human-readable note about where the price came from
+        }
+
+    Resolution order:
+      1. Explicit amount in text → use it directly
+      2. AI parse (may return 0 for amount if not stated)
+      3. Web search for real-time price (if amount still 0 and use_web_search=True)
+      4. Keyword table fallback
+      5. Generic ₱20,000 default
     """
     today = datetime.today()
-
-    ai = _ai_parse(text, monthly_income, today)
-    if ai:
-        if ai["target_amount"] == 0:
-            ai["target_amount"] = _keyword_amount(text.lower()) or _regex_amount(text) or 20_000
-        return ai
-
     t_lower = text.lower()
-    amount  = _regex_amount(text) or _keyword_amount(t_lower) or 20_000
-    name    = _regex_goal_name(t_lower)
-    dl      = _regex_deadline(t_lower, today) or _estimate_deadline(amount, monthly_income, today)
+    price_source = "ai_default"
+    price_note = ""
 
-    return {"goal_name": name, "target_amount": amount, "deadline": dl}
+    # ── Step 1: Try AI parser ─────────────────────────────────────────────
+    ai = _ai_parse(text, monthly_income, today)
+
+    if ai:
+        goal_name = ai["goal_name"]
+        amount    = ai["target_amount"]
+        deadline  = ai["deadline"]
+
+        # ── Step 2: If AI found no amount, search for real-time price ────
+        if amount == 0 and use_web_search:
+            try:
+                from modules.ai_engine import lookup_price_for_goal
+                search_result = lookup_price_for_goal(text, monthly_income)
+                if search_result["found"] and search_result["price"] > 0:
+                    amount       = search_result["price"]
+                    price_source = "web_search"
+                    price_note   = search_result["source_note"]
+            except Exception:
+                pass
+
+        # ── Step 3: Keyword fallback if web search also returned 0 ───────
+        if amount == 0:
+            amount = _keyword_amount(t_lower) or _regex_amount(text)
+            if amount > 0:
+                price_source = "keyword"
+                price_note   = f"Estimated based on typical Philippine market price for this item type."
+            else:
+                amount = 20_000
+                price_source = "default"
+                price_note   = "No price found — using ₱20,000 as a starting estimate. Edit the goal to set your actual target."
+
+        # ── Step 4: Explicit check — override everything if amount was stated ─
+        explicit = _regex_amount(text)
+        if explicit > 0 and _has_explicit_amount(text):
+            amount       = explicit
+            price_source = "user_stated"
+            price_note   = "Amount taken directly from your goal description."
+
+        # ── Step 5: Deadline fallback ─────────────────────────────────────
+        if not deadline:
+            deadline = _regex_deadline(t_lower, today) or _estimate_deadline(amount, monthly_income, today)
+
+        return {
+            "goal_name":    goal_name,
+            "target_amount": amount,
+            "deadline":     deadline,
+            "price_source": price_source,
+            "price_note":   price_note,
+        }
+
+    # ── Pure regex fallback (no AI available) ────────────────────────────
+    amount   = _regex_amount(text) or _keyword_amount(t_lower) or 20_000
+    name     = _regex_goal_name(t_lower)
+    dl       = _regex_deadline(t_lower, today) or _estimate_deadline(amount, monthly_income, today)
+
+    # Try web search even in regex-only fallback
+    if amount == 20_000 and use_web_search and not _has_explicit_amount(text):
+        try:
+            from modules.ai_engine import lookup_price_for_goal
+            search_result = lookup_price_for_goal(text, monthly_income)
+            if search_result["found"] and search_result["price"] > 0:
+                amount       = search_result["price"]
+                price_source = "web_search"
+                price_note   = search_result["source_note"]
+        except Exception:
+            pass
+
+    return {
+        "goal_name":    name,
+        "target_amount": amount,
+        "deadline":     dl,
+        "price_source": price_source,
+        "price_note":   price_note,
+    }

@@ -22,9 +22,22 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
+        # Prioritize environment variable (from Codespaces secrets)
+        # then fall back to .env file
         key = os.getenv("OPENAI_API_KEY")
+        
         if not key:
-            raise ValueError("OPENAI_API_KEY not found in .env file.")
+            # If not in environment, try loading from .env
+            load_dotenv()
+            key = os.getenv("OPENAI_API_KEY")
+        
+        if not key:
+            raise ValueError("OPENAI_API_KEY not found. Please set it in Codespaces secrets or .env file.")
+        
+        # Validate API key format (should start with 'sk-' or 'sk-proj-')
+        if not key.startswith("sk-"):
+            raise ValueError("OPENAI_API_KEY has invalid format. It should start with 'sk-' or 'sk-proj-'")
+        
         _client = OpenAI(api_key=key)
     return _client
 
@@ -45,7 +58,17 @@ def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
         )
         return r.choices[0].message.content.strip()
     except Exception as e:
-        return f"⚠️ AI Error: {e}"
+        # Sanitize error message to hide API key and sensitive details
+        error_str = str(e)
+        if "invalid_api_key" in error_str.lower() or "401" in error_str:
+            return "⚠️ AI Error: Authentication failed. Please check your API key configuration."
+        elif "rate_limit" in error_str.lower() or "429" in error_str:
+            return "⚠️ AI Error: Service is temporarily busy. Please try again in a moment."
+        elif "model" in error_str.lower() and "not" in error_str.lower():
+            return "⚠️ AI Error: Model not available. Please try again later."
+        else:
+            # Generic error for anything else (hides API key and internal details)
+            return "⚠️ AI Error: Service unavailable. Please try again."
 
 
 def _ai_error_text() -> str:
@@ -184,7 +207,17 @@ def _chat_with_search(
         return (response.choices[0].message.content or "").strip()
 
     except Exception as e:
-        return f"⚠️ AI Error: {e}"
+        # Sanitize error message to hide API key and sensitive details
+        error_str = str(e)
+        if "invalid_api_key" in error_str.lower() or "401" in error_str:
+            return "⚠️ AI Error: Authentication failed. Please check your API key configuration."
+        elif "rate_limit" in error_str.lower() or "429" in error_str:
+            return "⚠️ AI Error: Service is temporarily busy. Please try again in a moment."
+        elif "model" in error_str.lower() and "not" in error_str.lower():
+            return "⚠️ AI Error: Model not available. Please try again later."
+        else:
+            # Generic error for anything else (hides API key and internal details)
+            return "⚠️ AI Error: Service unavailable. Please try again."
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -661,14 +694,15 @@ Rules:
         max_tokens=60,
     ).strip().strip('"')
 
-    if not search_query or len(search_query) < 5:
-        return {"found": False, "price": 0.0, "source_note": "", "search_query": ""}
+    # Check if we got an error message instead of a valid search query
+    if search_query.startswith("⚠️ AI Error:") or not search_query or len(search_query) < 5:
+        return {"found": False, "price": 0.0, "source_note": "AI service unavailable", "search_query": ""}
 
     # Perform the web search
     search_result = _perform_web_search(search_query)
 
-    if "[Search unavailable" in search_result or "No search results" in search_result:
-        return {"found": False, "price": 0.0, "source_note": search_result, "search_query": search_query}
+    if "[Search unavailable" in search_result or "No search results" in search_result or search_result.startswith("⚠️ AI Error:"):
+        return {"found": False, "price": 0.0, "source_note": "Search unavailable", "search_query": search_query}
 
     # Ask the AI to extract the price from search results
     extract_prompt = f"""
@@ -697,6 +731,10 @@ Return ONLY valid JSON:
         temperature=0.0,
         max_tokens=120,
     ).strip().replace("```json", "").replace("```", "").strip()
+
+    # Check if we got an error message instead of valid JSON
+    if raw.startswith("⚠️ AI Error:"):
+        return {"found": False, "price": 0.0, "source_note": "Price extraction failed", "search_query": search_query}
 
     try:
         data = json.loads(raw)

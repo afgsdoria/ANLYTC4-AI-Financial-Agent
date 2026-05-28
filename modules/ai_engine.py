@@ -48,6 +48,14 @@ def _chat(system: str, user: str, temperature=0.7, max_tokens=1500) -> str:
         return f"⚠️ AI Error: {e}"
 
 
+def _ai_error_text() -> str:
+    return "The AI service is currently unavailable. Please check your OpenAI API key and try again."
+
+
+def _is_ai_error(raw: str) -> bool:
+    return isinstance(raw, str) and raw.strip().startswith("⚠️ AI Error:")
+
+
 # ── Web-search tool definition (OpenAI function calling) ─────────────────────
 
 _WEB_SEARCH_TOOL = {
@@ -263,6 +271,31 @@ Return ONLY this JSON (no markdown fences, no extra text):
 """
     raw = _chat(system, user_prompt, temperature=0.4, max_tokens=2200)
 
+    if _is_ai_error(raw):
+        fallback_chart = {}
+        if expenses:
+            from collections import defaultdict
+            cat_totals = defaultdict(float)
+            for c, a, _ in expenses:
+                cat_totals[c] += a
+            fallback_chart = {
+                "categories": list(cat_totals.keys()),
+                "amounts": list(cat_totals.values()),
+                "insight": "Chart from expense data.",
+            }
+        return {
+            "health_summary": _ai_error_text(),
+            "spending_habits": "AI analysis unavailable right now.",
+            "risk_flags": [],
+            "step_plan": [],
+            "chart_insights": "Chart data loaded from your expenses.",
+            "forecast_narrative": "Forecast based on current savings rate.",
+            "recommended_monthly_savings": max(0, remaining),
+            "months_to_goal": 0,
+            "weekly_budget": max(0, remaining / 4.33),
+            "chart_data": fallback_chart,
+        }
+
     raw = raw.strip()
     if raw.startswith("```"):
         parts = raw.split("```")
@@ -303,7 +336,7 @@ Return ONLY this JSON (no markdown fences, no extra text):
                 "insight": "Chart from expense data.",
             }
         return {
-            "health_summary": raw[:300] if raw else "Analysis pending.",
+            "health_summary": _ai_error_text(),
             "spending_habits": "Unable to parse spending analysis.",
             "risk_flags": [],
             "step_plan": [],
@@ -348,6 +381,13 @@ Return ONLY this JSON:
 }}
 """
     raw = _chat(system, prompt, temperature=0.2, max_tokens=400)
+    if _is_ai_error(raw):
+        return {
+            "categories": list(cat_totals.keys()),
+            "amounts": list(cat_totals.values()),
+            "insight": _ai_error_text(),
+        }
+
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         data = json.loads(raw)
@@ -366,6 +406,32 @@ Return ONLY this JSON:
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. FINANCIAL ADVICE (for PDF report)
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _local_financial_summary(
+    username, user_type, income, savings_goal,
+    current_savings, total_spending, expenses, active_goal=None
+) -> str:
+    remaining = income - total_spending
+    savings_rate = (remaining / income * 100) if income else 0.0
+    lines = [
+        f"Personal financial snapshot for {username}.",
+        f"Monthly income is ₱{income:,.2f}, total spending is ₱{total_spending:,.2f}, and current savings are ₱{current_savings:,.2f}.",
+        f"This leaves ₱{remaining:,.2f} available each month, which is a {savings_rate:.0f}% savings rate.",
+    ]
+    if savings_goal and savings_goal > 0:
+        lines.append(
+            f"Your savings goal is ₱{savings_goal:,.2f}. Keep tracking progress and aim to save consistently toward that target."
+        )
+    if active_goal:
+        lines.append(
+            f"Active goal: {active_goal['goal_name']} for ₱{float(active_goal.get('target_amount') or 0):,.2f} due by {active_goal['deadline']}."
+        )
+    lines.append("Key next steps: review your top spending categories, reduce non-essential expenses, and allocate any surplus toward savings.")
+    if expenses:
+        categories = sorted({c for c, _, _ in expenses})
+        lines.append(f"Recorded expense categories: {', '.join(categories)}.")
+    return "\n\n".join(lines)
+
 
 def generate_financial_advice(
     username, user_type, income, savings_goal,
@@ -395,7 +461,13 @@ Write a 200-word financial summary covering:
 3. Goal progress commentary
 Use ₱ for peso amounts.
 """
-    return _chat(system, prompt)
+    raw = _chat(system, prompt)
+    if _is_ai_error(raw):
+        return _local_financial_summary(
+            username, user_type, income, savings_goal,
+            current_savings, total_spending, expenses, active_goal
+        )
+    return raw
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -416,7 +488,10 @@ Provide:
 3. One savings strategy from the data
 Under 200 words. Use ₱.
 """
-    return _chat(system, prompt)
+    raw = _chat(system, prompt)
+    if _is_ai_error(raw):
+        return _ai_error_text()
+    return raw
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -438,7 +513,10 @@ Give 3 points:
 3. Motivating closing remark
 Under 150 words. Use ₱.
 """
-    return _chat(system, prompt)
+    raw = _chat(system, prompt)
+    if _is_ai_error(raw):
+        return _ai_error_text()
+    return raw
 
 
 # ══════════════════════════════════════════════════════════════════════════════

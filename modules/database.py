@@ -272,7 +272,7 @@ def get_total_spending(username):
     cursor.execute("""
     SELECT COALESCE(SUM(amount), 0)
     FROM expenses
-    WHERE username = ?
+    WHERE username = ? AND category != 'Savings'
     """, (username,))
     total = cursor.fetchone()[0]
     conn.close()

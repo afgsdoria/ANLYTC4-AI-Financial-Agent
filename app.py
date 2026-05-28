@@ -42,6 +42,7 @@ from modules.ai_engine import (
     generate_forecast_advice,
     financial_chatbot_with_memory,
     generate_ai_charts,
+    _ai_error_text,
 )
 from modules.file_processor   import process_uploaded_file
 from modules.forecasting       import generate_forecast
@@ -361,6 +362,20 @@ def _trigger_ai_analysis():
         active_goal     = goal,
         file_context    = st.session_state.file_context,
     )
+    if result.get("health_summary") == _ai_error_text():
+        if st.session_state.ai_analysis:
+            st.warning("AI analysis is temporarily unavailable. Retaining the last available insights.")
+        else:
+            st.session_state.ai_analysis = result
+
+        _auto_generate_report(
+            uname,
+            st.session_state.monthly_income,
+            st.session_state.current_savings,
+            st.session_state.savings_goal,
+        )
+        return
+
     plan_text = json.dumps(result.get("step_plan", []))
     save_ai_analysis(uname, result.get("health_summary",""), plan_text)
     st.session_state.ai_analysis = result
@@ -770,7 +785,7 @@ elif st.session_state.app_stage == "dashboard":
         exp_cat = st.selectbox(
             "Category",
             ["Food","Transportation","School","Shopping",
-             "Entertainment","Bills","Savings","Health","Other"],
+             "Entertainment","Bills","Savings","Health", "Groceries", "Other"],
             key="sb_cat",
         )
         exp_amt  = st.number_input("Amount (₱)", min_value=0.01, step=10.0,
@@ -1045,6 +1060,7 @@ elif st.session_state.app_stage == "dashboard":
 
         st.markdown("---")
         st.markdown("### Your Latest Report")
+
         if st.session_state.cached_report_path and os.path.exists(st.session_state.cached_report_path):
             with open(st.session_state.cached_report_path, "rb") as f_pdf:
                 st.download_button(
@@ -1168,10 +1184,13 @@ elif st.session_state.app_stage == "dashboard":
         if exps_id:
             df_all = pd.DataFrame(exps_id, columns=["ID","Category","Amount","Date"])
             total  = df_all["Amount"].sum()
+            total_saved = df_all.loc[df_all["Category"] == "Savings", "Amount"].sum()
+            total_spent = df_all.loc[df_all["Category"] != "Savings", "Amount"].sum()
 
-            e1, e2 = st.columns(2)
+            e1, e2, e3 = st.columns(3)
             e1.metric("Total Transactions", len(df_all))
-            e2.metric("Total Spent", pesos(total))
+            e2.metric("Total Spent", pesos(total_spent))
+            e3.metric("Total Saved", pesos(total_saved))
             st.markdown("---")
 
             cat_filter = st.multiselect(

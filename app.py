@@ -425,41 +425,22 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
     return pdf_path, report_data
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 #  STAGE: LANDING
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 if st.session_state.app_stage == "landing":
 
+    # 1. Header Section
     st.markdown("""
-    <div style="text-align:center;padding:40px 20px 20px">
+    <div style="text-align:center;padding:40px 20px 10px">
       <h1 style="font-size:2.6rem;font-weight:800;color:#60A5FA;margin:0">Financial AI Agent</h1>
-      <p style="color:#64748B;font-size:1.1rem;margin:10px 0 40px">
+      <p style="color:#64748B;font-size:1.1rem;margin:10px 0 20px">
         Turn financial goals into step-by-step action plans with AI-driven tracking, automated forecasting, and continuous budget analysis.
       </p>
     </div>
     """, unsafe_allow_html=True)
 
-    feats = [
-        ("🤖", "Autonomous Strategic Planning",  "Eliminate the stress of financial guesswork."),
-        ("📊", "Intelligence-Driven Visualizations",    "See your money work for you through smart, interactive dashboards."),
-        ("🎯", "Zero-Effort Goal Blueprinting",     "Plan your next milestone seamlessly."),
-        ("💬", "Finance-Only Chatbot",   "Personalized AI coach that knows your income, spending, and goals."),
-        ("📄", "Auto PDF Reports",       "Get a report instantly and download it anytime."),
-        ("📁", "File Upload Analysis",   "Share your bank statement or expense tracker for insights and context."),
-    ]
-    cols = st.columns(3)
-    for i, (icon, title, desc) in enumerate(feats):
-        with cols[i % 3]:
-            st.markdown(
-                f'<div class="feat-card">'
-                f'<div class="feat-icon">{icon}</div>'
-                f'<div class="feat-title">{title}</div>'
-                f'<div class="feat-desc">{desc}</div>'
-                f'</div><br>',
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    # 2. Credentials Section (Moved to the Top)
     st.markdown(
         '<p style="text-align:center;color:#64748B;font-size:.9rem;margin-bottom:6px">'
         'Enter your credentials to get started or log back in</p>',
@@ -483,6 +464,7 @@ if st.session_state.app_stage == "landing":
         go_new = b1.button("Create Account", use_container_width=True)
         go_log = b2.button("Login",          use_container_width=True)
 
+    # Credential processing logic block
     if go_new or go_log:
         name = uinput.strip()
         pwd  = pinput.strip()
@@ -501,7 +483,6 @@ if st.session_state.app_stage == "landing":
                 if existing:
                     st.error("❌ Username already exists. Please log in instead.")
                 else:
-                    # Store username + hashed password, proceed to onboarding
                     st.session_state.username      = name
                     st.session_state.pending_pwd   = hash_password(pwd)
                     st.session_state.app_stage     = "onboard"
@@ -514,8 +495,6 @@ if st.session_state.app_stage == "landing":
                 else:
                     stored_hash = existing.get("password_hash")
 
-                    # Legacy accounts with no password: accept any password
-                    # and set it as their new password automatically
                     if not stored_hash:
                         set_password(name, pwd)
                         stored_hash = hash_password(pwd)
@@ -545,6 +524,39 @@ if st.session_state.app_stage == "landing":
                             st.session_state.app_stage = "onboard"
                         st.rerun()
 
+    st.markdown("<br><hr style='border-color: #1e293b;'><br>", unsafe_allow_html=True)
+
+    # 3. Features Value Grid Section
+    feats = [
+        ("🤖", "Autonomous Strategic Planning", "Eliminate the stress of financial guesswork."),
+        ("📊", "Intelligence-Driven Visualizations", "See your money work for you through smart, interactive dashboards."),
+        ("🎯", "Zero-Effort Goal Blueprinting", "Plan your next milestone seamlessly."),
+        ("💬", "Finance-Only Chatbot", "Personalized AI coach that knows your income, spending, and goals."),
+        ("📄", "Auto PDF Reports", "Get a report instantly and download it anytime."),
+        ("📁", "File Upload Analysis", "Share your bank statement or expense tracker for insights and context."),
+    ]
+    
+    cols = st.columns(3)
+    for i, (icon, title, desc) in enumerate(feats):
+        with cols[i % 3]:
+            st.markdown(
+                f'<div class="feat-card">'
+                f'<div class="feat-icon">{icon}</div>'
+                f'<div class="feat-title">{title}</div>'
+                f'<div class="feat-desc">{desc}</div>'
+                f'</div><br>',
+                unsafe_allow_html=True,
+            )
+
+    # 4. Full Width Disclaimer Banner
+    st.markdown(
+        f'<div class="feat-card" style="width: 100%;">'
+        f'<div class="feat-icon">⚠️</div>'
+        f'<div class="feat-title">Disclaimer</div>'
+        f'<div class="feat-desc" style="max-width: 100%;">finAI is an advisory tool designed to guide you, not manage your money. You always maintain full control over your spending decisions and data. Your information is kept completely private and secure locally, with zero direct connection to your real bank accounts or digital wallets.</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAGE: ONBOARDING — ALL-IN-ONE WIZARD

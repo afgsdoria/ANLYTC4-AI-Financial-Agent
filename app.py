@@ -349,7 +349,7 @@ def _trigger_ai_analysis():
     _deactivate_completed_goals(uname, st.session_state.current_savings)
     expenses = get_expenses(uname)
     spending = get_total_spending(uname)
-    goal     = get_active_goal(uname)
+    goals    = get_active_goals(uname)  # Get all active goals, not just one
     result   = run_full_agent_analysis(
         username        = uname,
         user_type       = st.session_state.user_type,
@@ -359,7 +359,7 @@ def _trigger_ai_analysis():
         savings_goal    = st.session_state.savings_goal,
         total_spending  = spending,
         expenses        = expenses,
-        active_goal     = goal,
+        active_goals    = goals,  # Pass list of all active goals
         file_context    = st.session_state.file_context,
     )
     if result.get("health_summary") == _ai_error_text():
@@ -391,14 +391,14 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
     """Generate PDF report and return (file_path, report_data_dict) for inline display."""
     spending_r = get_total_spending(uname)
     expenses_r = get_expenses(uname)
-    active_r   = get_active_goal(uname)
+    active_goals_r = get_active_goals(uname)  # Get all active goals
     score_r, level_r = calculate_financial_health_score(income, spending_r, savings)
     alerts_r = generate_spending_alerts(income, spending_r, expenses_r)
     recs_r   = generate_recommendations(income, spending_r, goal_amt,
-                                         savings, expenses_r, active_r)
+                                         savings, expenses_r, active_goals_r[0] if active_goals_r else None)
     advice_r = generate_financial_advice(
         uname, st.session_state.user_type, income, goal_amt,
-        savings, spending_r, expenses_r, active_r,
+        savings, spending_r, expenses_r, active_goals_r[0] if active_goals_r else None,
     )
     pdf_path = generate_financial_report(
         username=uname, advice=advice_r,
@@ -406,7 +406,7 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
         recommendations=recs_r, alerts=alerts_r,
         monthly_income=income, total_spending=spending_r,
         current_savings=savings, savings_goal=goal_amt,
-        active_goals=[active_r] if active_r else [],
+        active_goals=active_goals_r,  # Pass all active goals
     )
     report_data = {
         "score":          score_r,
@@ -419,7 +419,7 @@ def _build_report(uname: str, income: float, savings: float, goal_amt: float) ->
         "alerts":         alerts_r,
         "recommendations":recs_r,
         "advice":         advice_r,
-        "active_goal":    active_r,
+        "active_goals":   active_goals_r,  # Store all active goals in report data
         "generated_at":   datetime.now().strftime("%B %d, %Y %I:%M %p"),
     }
     return pdf_path, report_data
@@ -1279,13 +1279,20 @@ elif st.session_state.app_stage == "dashboard":
                 st.markdown(prompt)
 
             bday_ctx = f" | Birthday: {st.session_state.birthday}" if st.session_state.get('birthday') else ""
+            # Build context with all active goals
+            active_goals_text = "None"
+            if active_goals:
+                active_goals_text = "; ".join(
+                    f"{g['goal_name']} (₱{g['target_amount']:,.0f} by {g['deadline']})"
+                    for g in active_goals
+                )
             context = (
                 f"User: {uname} | Type: {st.session_state.user_type} | Age: {st.session_state.age}{bday_ctx}\n"
                 f"Monthly Income: {pesos(income)}\n"
                 f"Current Savings: {pesos(savings)}\n"
                 f"Total Spending: {pesos(get_total_spending(uname))}\n"
                 f"Savings Goal: {pesos(goal_amt)}\n"
-                f"Active Goal: {active_goal['goal_name'] if active_goal else 'None'}"
+                f"Active Goals: {active_goals_text}"
             )
             history = get_chat_history(uname)
             with st.spinner("Thinking…"):

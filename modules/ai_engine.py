@@ -22,17 +22,19 @@ _client = None
 def _get_client():
     global _client
     if _client is None:
-        # Prioritize environment variable (from Codespaces secrets)
-        # then fall back to .env file
+        # Try environment variable first (Codespaces secrets)
         key = os.getenv("OPENAI_API_KEY")
         
-        if not key:
-            # If not in environment, try loading from .env
-            load_dotenv()
+        # If environment variable doesn't have a valid key, load from .env
+        if not key or not key.strip().startswith("sk-"):
+            load_dotenv(override=True)
             key = os.getenv("OPENAI_API_KEY")
         
         if not key:
             raise ValueError("OPENAI_API_KEY not found. Please set it in Codespaces secrets or .env file.")
+        
+        # Clean up whitespace
+        key = key.strip()
         
         # Validate API key format (should start with 'sk-' or 'sk-proj-')
         if not key.startswith("sk-"):
@@ -227,20 +229,22 @@ def _chat_with_search(
 def run_full_agent_analysis(
     username, user_type, age, income, current_savings,
     savings_goal, total_spending, expenses,
-    active_goal=None, file_context=None
+    active_goals=None, file_context=None
 ) -> dict:
     exp_lines = "\n".join(
         f"  • {cat}: ₱{amt:,.2f} on {dt}"
         for cat, amt, dt in (expenses or [])[:30]
     ) or "  No expenses recorded yet."
 
-    goal_block = "No active goal."
-    if active_goal:
-        goal_block = (
-            f"Goal: {active_goal['goal_name']} | "
-            f"Target: ₱{active_goal['target_amount']:,.2f} | "
-            f"Deadline: {active_goal['deadline']}"
-        )
+    goal_block = "No active goals."
+    if active_goals:
+        # Format all active goals
+        goal_lines = []
+        for goal in active_goals:
+            goal_lines.append(
+                f"• {goal['goal_name']}: ₱{goal['target_amount']:,.2f} by {goal['deadline']}"
+            )
+        goal_block = "Active Goals:\n" + "\n".join(goal_lines)
 
     file_block = ""
     if file_context:
@@ -658,8 +662,16 @@ USER FINANCIAL PROFILE:
             max_tokens=900,
         )
 
+    except ValueError as ve:
+        # API key configuration error
+        return f"⚠️ Configuration error: {str(ve)}"
     except Exception as e:
-        return f"⚠️ Chatbot error: {e}"
+        # Other errors (network, rate limit, etc.)
+        error_str = str(e)
+        if "invalid_api_key" in error_str.lower() or "401" in error_str:
+            return "⚠️ Chatbot error: Authentication failed. Please check your API key in Codespaces secrets or .env file."
+        else:
+            return f"⚠️ Chatbot error: {error_str}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -4,6 +4,8 @@
 
 finAI is an intelligent, autonomous personal finance agent engineered specifically to bridge the financial literacy gap for Filipino demographics—including students, minimum-wage earners, and freelancers. Unlike passive expense tracking systems, finAI interprets plain-language aspirations, dynamically resolves pricing information gaps via live web search utilities, evaluates personal spending risks against deterministic algorithms, and synthesizes strategic action plans alongside on-demand PDF report generation.
 
+### Live Web Prototype: [anlytc4-ai-financial-agent-f32sr4syzkloqzph2feh3e.streamlit.app](https://anlytc4-ai-financial-agent-f32sr4syzkloqzph2feh3e.streamlit.app/)
+
 ---
 
 ![finAI Landing Page Dashboard](./finAI%20Home%20Page.png)

@@ -959,31 +959,75 @@ elif st.session_state.app_stage == "dashboard":
         sh_col, rf_col = st.columns(2)
 
         with sh_col:
-            st.markdown('<div class="shdr">🔍 AI Spending Analysis</div>', unsafe_allow_html=True)
+            st.markdown('<div class="shdr">AI Spending Analysis</div>', unsafe_allow_html=True)
+            
             if ai.get("spending_habits") and str(ai["spending_habits"]).strip() != "":
                 st.info(ai["spending_habits"])
             else:
                 alerts = generate_spending_alerts(income, spending, expenses)
                 if alerts:
+                    # Hardcoded dictionary matching your alerts.py thresholds for reference
+                    threshold_mapping = {
+                        "Food": 0.30,
+                        "Entertainment": 0.15,
+                        "Shopping": 0.20,
+                        "Transportation": 0.20,
+                        "Bills": 0.35,
+                    }
+                    
                     for a in alerts:
-                        # CRITICAL DEFENSE: Enforce that 'a' must be a clean string, blocking raw DeltaGenerators
-                        if isinstance(a, str) and str(a).strip() != "":
-                            if "⚠" in a or "🚨" in a:
-                                st.warning(a)
+                        if isinstance(a, str) and a.strip() != "":
+                            # Check if this alert corresponds to a specific category threshold breach
+                            enhanced_alert = a
+                            for cat, thresh_pct in threshold_mapping.items():
+                                if f"{cat} spending" in a and "Recommended:" in a:
+                                    # Calculate the exact recommended amount in pesos based on current income
+                                    max_recommended_peso = income * thresh_pct
+                                    # Append the exact maximum peso value cleanly to the end of the alert text
+                                    enhanced_alert = a.replace(
+                                        f"≤{thresh_pct*100:.0f}%", 
+                                        f"≤{thresh_pct*100:.0f}% ({pesos(max_recommended_peso)})"
+                                    )
+                            
+                            # Display the updated warning or critical indicator card
+                            if "⚠️" in enhanced_alert or "🚨" in enhanced_alert:
+                                st.warning(enhanced_alert)
                             else:
-                                st.success(a)
+                                st.success(enhanced_alert)
+                else:
+                    st.success("✅ No spending risks or category limit alerts detected.")
 
         with rf_col:
             shdr("Risk Flags")
             flags = ai.get("risk_flags") or []
+            
             if flags:
+                # 1. If the AI model identified dynamic behavioral anomalies, show them as badges
                 badges = "".join(f'<span class="risk-badge">{f}</span>' for f in flags)
                 st.markdown(badges, unsafe_allow_html=True)
             else:
-                recs = generate_recommendations(income, spending, goal_amt,
-                                                savings, expenses, active_goal)
-                for r in recs[:3]:
-                    st.info(r)
+                # 2. Fallback to our deterministic code engine if no text flags are present
+                alerts = generate_spending_alerts(income, spending, expenses)
+                
+                # We filter for warning/danger strings to prevent showing positive messages as "risks"
+                danger_alerts = [a for a in alerts if "🚨" in a or "⚠️" in a]
+                
+                if danger_alerts:
+                    for da in danger_alerts:
+                        st.markdown(
+                            f'<div style="background:#1C0808; border:1px solid #EF4444; '
+                            f'color:#FCA5A5; border-radius:10px; padding:12px 16px; margin-bottom:10px; '
+                            f'font-size:0.88rem; font-weight:600;">{da}</div>', 
+                            unsafe_allow_html=True
+                        )
+                else:
+                    # 3. Clean record feedback
+                    st.markdown(
+                        f'<div style="background:#052E16; border:1px solid #22C55E; '
+                        f'color:#86EFAC; border-radius:10px; padding:12px 16px; '
+                        f'font-size:0.88rem; font-weight:600;">✅ Safe: No active budgeting risks or overspending patterns flagged.</div>', 
+                        unsafe_allow_html=True
+                    )
 
         st.markdown("---")
 
